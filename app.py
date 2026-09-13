@@ -64,8 +64,7 @@ def create_app(engine: SearchEngine) -> FastAPI:
             "backend": engine.backend,
             "dim": engine.embedder.dim,
             "semantic": engine.backend != "hashing-fallback",
-            "ai_model": rag.MODEL,
-            "ai_configured": rag.ai_configured(),
+            "ai": rag.backend_info(engine.embedder),
             "cwd": os.getcwd(),
             "examples": EXAMPLE_QUERIES,
         }
@@ -89,7 +88,7 @@ def create_app(engine: SearchEngine) -> FastAPI:
             if not results:
                 yield f"data: {json.dumps({'type': 'error', 'message': 'No documents matched, so there is nothing to answer from. Index a folder or add documents first.'})}\n\n"
                 return
-            async for event in rag.stream_answer(req.query, results):
+            async for event in rag.stream_answer(req.query, results, engine.embedder):
                 yield f"data: {json.dumps(event)}\n\n"
 
         return StreamingResponse(events(), media_type="text/event-stream",
@@ -145,6 +144,8 @@ def main() -> None:
     os.makedirs(os.path.dirname(args.db) or ".", exist_ok=True)
     engine = SearchEngine(db_path=args.db)
     print(f"Embedding backend: {engine.backend}")
+    ai = rag.backend_info(engine.embedder)
+    print(f"Answer backend:    {ai['label']}" + (f"  ({ai['note']})" if ai.get("note") else ""))
     if engine.reembedded:
         print(f"Re-embedded {engine.reembedded} documents for the current model.")
     if args.folder:

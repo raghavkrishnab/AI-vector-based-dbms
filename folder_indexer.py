@@ -105,7 +105,8 @@ def index_folder(engine, root: str = ".") -> IndexReport:
 
     for path in iter_text_files(root):
         seen.add(path)
-        mtime = os.path.getmtime(path)
+        # Integer nanoseconds round-trip exactly through JSON/SQLite (floats may not).
+        mtime = os.stat(path).st_mtime_ns
         if known.get(path) == mtime:
             report.skipped_unchanged += 1
             continue

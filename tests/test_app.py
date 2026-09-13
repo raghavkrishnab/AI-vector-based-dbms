@@ -62,7 +62,7 @@ def test_index_folder_endpoint(client, tmp_path):
 
 
 def test_ask_streams_sources_then_answer(client, monkeypatch):
-    async def fake_stream(question, results):
+    async def fake_stream(question, results, embedder):
         yield {"type": "delta", "text": "Basketball [1]"}
         yield {"type": "done", "model": "test", "stop_reason": "end_turn"}
 
@@ -78,6 +78,44 @@ def test_ask_with_empty_db_returns_error(client):
     with client.stream("POST", "/api/ask", json={"query": "anything"}) as res:
         events = [json.loads(line[6:]) for line in res.iter_lines() if line.startswith("data: ")]
     assert events[-1]["type"] == "error"
+
+
+def _events(client, query):
+    with client.stream("POST", "/api/ask", json={"query": query}) as res:
+        return [json.loads(line[6:]) for line in res.iter_lines() if line.startswith("data: ")]
+
+
+def test_extractive_answer_without_ollama(client, monkeypatch):
+    monkeypatch.setattr(rag, "ollama_status", lambda: {"running": False, "model_ready": False, "models": []})
+    client.post("/api/samples")
+    assert client.get("/api/stats").json()["ai"]["backend"] == "extractive"
+    events = _events(client, "which sport is played on weekends with friends")
+    assert events[-1]["type"] == "done" and events[-1]["model"].startswith("extractive")
+    answer = "".join(e["text"] for e in events if e["type"] == "delta")
+    assert "basketball" in answer.lower() and "[" in answer
+
+
+def test_ollama_answer_is_streamed(client, monkeypatch):
+    monkeypatch.setattr(rag, "ollama_status", lambda: {"running": True, "model_ready": True, "models": ["llama3.2:latest"]})
+
+    async def fake_ollama(question, results):
+        yield {"type": "delta", "text": "Basketball [1]"}
+        yield {"type": "done", "model": "ollama · llama3.2"}
+
+    monkeypatch.setattr(rag, "_stream_ollama", fake_ollama)
+    client.post("/api/samples")
+    events = _events(client, "sports")
+    assert [e["type"] for e in events] == ["sources", "delta", "done"]
+    assert events[-1]["model"].startswith("ollama")
+
+
+def test_falls_back_when_ollama_unreachable(client, monkeypatch):
+    monkeypatch.setattr(rag, "ollama_status", lambda: {"running": True, "model_ready": True, "models": []})
+    monkeypatch.setattr(rag, "OLLAMA_URL", "http://127.0.0.1:9")  # nothing listens here
+    client.post("/api/samples")
+    events = _events(client, "sports")
+    types = [e["type"] for e in events]
+    assert "notice" in types and types[-1] == "done"
 
 
 def test_prompt_includes_numbered_sources(engine):

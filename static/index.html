@@ -237,7 +237,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 <main>
   <section class="hero">
     <h1>Search by <span class="grad">meaning</span>, not keywords</h1>
-    <p>An AI-powered vector database. Your documents and files are embedded with a transformer model, retrieved by cosine similarity, and answered by Claude.</p>
+    <p>An AI-powered vector database. Your documents and files are embedded with a transformer model, retrieved by cosine similarity, and answered by a free local AI model.</p>
 
     <form class="searchbox" id="search-form" autocomplete="off">
       <span aria-hidden="true">🔎</span>
@@ -372,8 +372,8 @@ async function loadStats() {
   $("#pill-embed").innerHTML = `<span class="dot ${s.semantic ? "on" : "warn"}"></span><span>${s.semantic ? esc(s.backend.replace("sentence-transformers:", "")) : "offline embedder"} · ${s.dim}d</span>`;
   $("#pill-embed").title = s.semantic ? "Transformer embeddings active" : "sentence-transformers not available — using keyword-hashing fallback";
   $("#pill-docs").innerHTML = `<span>${s.documents.toLocaleString()} docs</span>`;
-  $("#pill-ai").innerHTML = `<span class="dot ${s.ai_configured ? "on" : "warn"}"></span><span>${esc(s.ai_model)}</span>`;
-  $("#pill-ai").title = s.ai_configured ? "Claude answers enabled" : "Set ANTHROPIC_API_KEY to enable AI answers";
+  $("#pill-ai").innerHTML = `<span class="dot ${s.ai.generative ? "on" : "warn"}"></span><span>${esc(s.ai.label)}</span>`;
+  $("#pill-ai").title = s.ai.generative ? "Generated answers from your local Ollama model" : s.ai.note;
   const sel = $("#category"), cur = sel.value;
   sel.innerHTML = '<option value="">All</option>' + s.categories.map(c => `<option ${c === cur ? "selected" : ""}>${esc(c)}</option>`).join("");
   if (!$("#folder").value) $("#folder").value = s.cwd;
@@ -492,7 +492,9 @@ async function run() {
           $(".sources", output).innerHTML = ev.results.length
             ? `<div class="section-title">Sources</div>` + metaLine(ev).replace('class="meta-line"', 'class="meta-line" style="margin-top:0"') + `<div class="results"></div>` : "";
           if (ev.results.length) renderResults($(".results", output), ev.results, query);
-          answerBody.innerHTML = `<div class="thinking"><span class="spinner"></span>Claude is reading ${ev.results.length} sources…</div>`;
+          answerBody.innerHTML = `<div class="thinking"><span class="spinner"></span>Reading ${ev.results.length} sources…</div>`;
+        } else if (ev.type === "notice") {
+          toast(ev.message);
         } else if (ev.type === "delta") {
           text += ev.text;
           if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; paint(false); }); }
@@ -603,9 +605,7 @@ $("#library").addEventListener("click", async e => {
   } catch (err) { toast(err.message); }
 });
 
-loadStats()
-  .then(() => { if (!state.stats.ai_configured) setMode("search"); })
-  .catch(err => toast("Could not reach server: " + err.message));
+loadStats().catch(err => toast("Could not reach server: " + err.message));
 </script>
 </body>
 </html>

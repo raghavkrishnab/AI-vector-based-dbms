@@ -165,7 +165,7 @@ class VectorDB:
         self.conn.commit()
         return cur.rowcount
 
-    def indexed_sources(self, root: str) -> Dict[str, float]:
+    def indexed_sources(self, root: str) -> Dict[str, int]:
         """Return {source_path: mtime} for files indexed from the given root folder."""
         rows = self.conn.execute(
             "SELECT DISTINCT json_extract(metadata, '$.source') AS source, "

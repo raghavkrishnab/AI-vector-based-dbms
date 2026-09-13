@@ -2,8 +2,9 @@
 
 Search your documents and code **by meaning, not keywords**, and get **AI answers
 with citations**. Text is embedded with a transformer model, stored in a real
-**SQLite** database, retrieved by **cosine similarity**, and answered by
-**Claude** using retrieval-augmented generation (RAG).
+**SQLite** database, retrieved by **cosine similarity**, and answered by a
+**free, local AI model** (Ollama or sentence-transformers) using retrieval-augmented
+generation (RAG). No paid API keys, and your data never leaves your machine.
 
 > Engineering Project — VIT Chennai
 
@@ -13,8 +14,10 @@ with citations**. Text is embedded with a transformer model, stored in a real
 
 - **Semantic search** — `all-MiniLM-L6-v2` sentence embeddings (384-d). A query like
   *"king on throne"* finds *"The monarch occupies the royal seat"* with zero shared words.
-- **Ask AI (RAG)** — the top matches are sent to Claude (`claude-opus-5`), which streams
-  an answer that cites its sources as clickable `[1]`, `[2]` chips.
+- **Ask AI (RAG), 100% free** — answers cite their sources as clickable `[1]`, `[2]` chips:
+  - **Ollama** (e.g. `llama3.2`) writes a natural-language answer, streamed token by token.
+  - Without Ollama, an **extractive** answer uses the same sentence-transformers model to pick
+    the source sentences that best answer the question — zero setup.
 - **Index any folder** — point it at a directory of notes, docs or code. Files are split into
   line-numbered chunks; re-indexing is incremental (only changed files are re-embedded).
 - **Modern web UI** — light/dark themes, streaming answers, score meters, highlighted
@@ -36,18 +39,22 @@ venv\Scripts\activate            # macOS/Linux: source venv/bin/activate
 # 2. install dependencies
 pip install -r requirements.txt
 
-# 3. (optional) enable AI answers
-set ANTHROPIC_API_KEY=sk-ant-...  # macOS/Linux: export ANTHROPIC_API_KEY=sk-ant-...
+# 3. (optional) generated answers with a free local LLM
+#    install Ollama from https://ollama.com, then:
+ollama pull llama3.2
 
 # 4. run the web app
 python app.py
 ```
 
 Open **http://127.0.0.1:8000**, click **☰ Data** → **Index folder** (or *Load sample
-documents*), then search or ask a question.
+documents*), then search or ask a question. The pill in the top bar shows which answer
+backend is active; the app detects Ollama automatically (no restart needed).
 
 Useful flags: `python app.py --folder C:\path\to\notes` indexes a folder at startup;
-`--port 9000`, `--db data/other.db`. Set `CLAUDE_MODEL` to use a different Claude model.
+`--port 9000`, `--db data/other.db`.
+Environment variables: `OLLAMA_MODEL` (default `llama3.2`, e.g. `qwen2.5:3b`, `mistral`,
+`phi3`) and `OLLAMA_URL` (default `http://127.0.0.1:11434`).
 
 ### Command line
 
@@ -75,7 +82,7 @@ python cli.py stats
                         │             │            └──────────────────────────┘
         ┌───────────────▼───┐   ┌─────▼──────────────┐   ┌─────────────────────┐
         │ vector_db.py      │   │ folder_indexer.py  │   │ rag.py              │
-        │ SQLite + cosine   │   │ walk, chunk, embed │   │ Claude, streaming,  │
+        │ SQLite + cosine   │   │ walk, chunk, embed │   │ Ollama or extractive│
         │ similarity        │   │ (incremental)      │   │ cited answers       │
         └───────────────────┘   └────────────────────┘   └─────────────────────┘
 ```
@@ -84,8 +91,11 @@ python cli.py stats
 
 1. The question is embedded with the same model as the documents.
 2. SQLite returns the stored vectors; the top-k by cosine similarity become the **sources**.
-3. The sources are sent to the UI immediately, then to Claude inside `<source>` tags.
-4. Claude's answer streams back over Server-Sent Events, citing sources by number.
+3. The sources are sent to the UI immediately.
+4. **If Ollama is running** with the model pulled, the sources go to the local LLM inside
+   `<source>` tags and its answer streams back over Server-Sent Events, citing sources by number.
+5. **Otherwise**, the sources are split into sentences, each is embedded, and the sentences
+   most similar to the question become the answer — each tagged with its source number.
 
 ```
 similarity = (a · b) / (‖a‖ · ‖b‖)      # 1.0 = identical meaning, 0 = unrelated
@@ -114,7 +124,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- e.g. embeddin
 |------|---------|
 | `app.py` | FastAPI server: JSON API + serves the UI |
 | `static/index.html` | Single-page web UI (no build step) |
-| `rag.py` | Retrieval-augmented answers with Claude (streaming) |
+| `rag.py` | Free RAG answers: Ollama (generative) or extractive fallback |
 | `search_engine.py` | Facade combining embeddings, database and indexing |
 | `embedding.py` | Transformer embeddings + offline fallback |
 | `vector_db.py` | SQLite vector store + cosine similarity search |
@@ -131,8 +141,8 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- e.g. embeddin
 python -m pytest tests -q
 ```
 
-Tests use the deterministic offline embedder, a temporary database and a mocked Claude
-stream, so they need no internet or API key.
+Tests use the deterministic offline embedder, a temporary database and a mocked Ollama
+stream, so they need no internet, GPU or Ollama install.
 
 ---
 
