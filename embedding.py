@@ -55,7 +55,9 @@ class EmbeddingService:
 
             self._model = SentenceTransformer(self.model_name)
             # Trust the model's real dimensionality if it differs.
-            self.dim = self._model.get_sentence_embedding_dimension()
+            get_dim = getattr(self._model, "get_embedding_dimension", None) \
+                or self._model.get_sentence_embedding_dimension
+            self.dim = get_dim()
             self.backend = f"sentence-transformers:{self.model_name}"
         except Exception:
             self._model = None

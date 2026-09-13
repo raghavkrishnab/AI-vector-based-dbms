@@ -45,7 +45,8 @@ class VectorDB:
     def __init__(self, db_path: str = "data/vectors.db", dim: int = 384):
         self.db_path = db_path
         self.dim = dim
-        # check_same_thread=False lets Streamlit's threads share the connection.
+        # check_same_thread=False lets the web server's threads share the
+        # connection; SearchEngine serializes access with a lock.
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._create_schema()
@@ -70,6 +71,18 @@ class VectorDB:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at)"
         )
+        # Key/value settings, e.g. which embedding model produced the vectors.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        self.conn.commit()
+
+    def get_meta(self, key: str) -> Optional[str]:
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
         self.conn.commit()
 
     # ------------------------------------------------------------------ #
@@ -161,6 +174,26 @@ class VectorDB:
             (root,),
         ).fetchall()
         return {r["source"]: r["mtime"] for r in rows}
+
+    def all_texts(self) -> List[tuple]:
+        """Return [(doc_id, text), ...] for every stored document."""
+        rows = self.conn.execute("SELECT doc_id, text FROM documents").fetchall()
+        return [(r["doc_id"], r["text"]) for r in rows]
+
+    def update_embeddings(self, pairs: List[tuple]) -> None:
+        """Replace vectors in bulk. pairs: [(doc_id, embedding), ...]."""
+        self.conn.executemany(
+            "UPDATE documents SET embedding = ?, dim = ? WHERE doc_id = ?",
+            [(self._vec_to_blob(v), int(len(v)), doc_id) for doc_id, v in pairs],
+        )
+        self.conn.commit()
+
+    def categories(self) -> List[str]:
+        rows = self.conn.execute(
+            "SELECT DISTINCT json_extract(metadata, '$.category') AS c FROM documents "
+            "WHERE c IS NOT NULL AND c != '' ORDER BY c"
+        ).fetchall()
+        return [r["c"] for r in rows]
 
     def clear(self) -> None:
         self.conn.execute("DELETE FROM documents")

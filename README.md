@@ -1,33 +1,97 @@
-# 🔎 Vector Search Database — Semantic Similarity Search
+# ✦ Vector Search — AI-Powered Semantic Search Database
 
-A simple, **DBMS-powered AI application** that finds documents by *meaning*
-instead of exact keywords. Text is turned into 384-dimensional embedding
-vectors, stored in a real **SQLite** database, and retrieved with **cosine
-similarity** search.
+Search your documents and code **by meaning, not keywords**, and get **AI answers
+with citations**. Text is embedded with a transformer model, stored in a real
+**SQLite** database, retrieved by **cosine similarity**, and answered by
+**Claude** using retrieval-augmented generation (RAG).
 
 > Engineering Project — VIT Chennai
 
 ---
 
-## What it does
+## Features
 
-Traditional keyword search only matches exact words. This project uses machine
-learning **embeddings** so that a query like *"I enjoy sports"* correctly
-retrieves *"I love playing basketball"* — even though they share no words.
-
-| | Traditional Search | Vector / Semantic Search |
-|---|---|---|
-| Matches | exact keywords | meaning / intent |
-| `"king on throne"` finds | only literal matches | *"the monarch occupies the royal seat"* (0.96) |
-| Handles synonyms | ❌ | ✅ |
+- **Semantic search** — `all-MiniLM-L6-v2` sentence embeddings (384-d). A query like
+  *"king on throne"* finds *"The monarch occupies the royal seat"* with zero shared words.
+- **Ask AI (RAG)** — the top matches are sent to Claude (`claude-opus-5`), which streams
+  an answer that cites its sources as clickable `[1]`, `[2]` chips.
+- **Index any folder** — point it at a directory of notes, docs or code. Files are split into
+  line-numbered chunks; re-indexing is incremental (only changed files are re-embedded).
+- **Modern web UI** — light/dark themes, streaming answers, score meters, highlighted
+  snippets, category filters, a data drawer to index folders, add text and browse/delete documents.
+- **Real DBMS underneath** — documents, vectors (BLOBs), metadata (JSON) and timestamps live
+  in SQL tables with indexes; filtering uses SQLite's JSON functions.
+- **Works offline** — if the transformer model can't load, a built-in hashing embedder keeps
+  search running; switching models later automatically re-embeds stored documents.
 
 ---
 
-## Why it's "DBMS-powered"
+## Quick start
 
-Every document is a **row in a SQL table** with a schema, primary key, index,
-metadata and timestamp. The app uses SQL to insert, delete, list and count
-documents, and stores each embedding as a `BLOB` column.
+```bash
+# 1. (optional) virtual environment
+python -m venv venv
+venv\Scripts\activate            # macOS/Linux: source venv/bin/activate
+
+# 2. install dependencies
+pip install -r requirements.txt
+
+# 3. (optional) enable AI answers
+set ANTHROPIC_API_KEY=sk-ant-...  # macOS/Linux: export ANTHROPIC_API_KEY=sk-ant-...
+
+# 4. run the web app
+python app.py
+```
+
+Open **http://127.0.0.1:8000**, click **☰ Data** → **Index folder** (or *Load sample
+documents*), then search or ask a question.
+
+Useful flags: `python app.py --folder C:\path\to\notes` indexes a folder at startup;
+`--port 9000`, `--db data/other.db`. Set `CLAUDE_MODEL` to use a different Claude model.
+
+### Command line
+
+```bash
+python cli.py index                                   # index the current folder
+python cli.py search "how are similarity scores calculated" --top-k 3
+python cli.py load-samples
+python cli.py add "Deep learning powers modern AI" --category technology
+python cli.py stats
+```
+
+---
+
+## Architecture
+
+```
+                 ┌──────────────────────────┐
+  Browser  ────► │ app.py  (FastAPI)        │  /api/search  /api/ask (SSE)  /api/index ...
+  static/        └────────────┬─────────────┘
+  index.html                  │
+                 ┌────────────▼─────────────┐      ┌──────────────────────────┐
+                 │ search_engine.py         │ ───► │ embedding.py             │
+                 │ (facade + thread lock)   │      │ sentence-transformers    │
+                 └──────┬─────────────┬─────┘      │ (or offline fallback)    │
+                        │             │            └──────────────────────────┘
+        ┌───────────────▼───┐   ┌─────▼──────────────┐   ┌─────────────────────┐
+        │ vector_db.py      │   │ folder_indexer.py  │   │ rag.py              │
+        │ SQLite + cosine   │   │ walk, chunk, embed │   │ Claude, streaming,  │
+        │ similarity        │   │ (incremental)      │   │ cited answers       │
+        └───────────────────┘   └────────────────────┘   └─────────────────────┘
+```
+
+### How "Ask AI" works
+
+1. The question is embedded with the same model as the documents.
+2. SQLite returns the stored vectors; the top-k by cosine similarity become the **sources**.
+3. The sources are sent to the UI immediately, then to Claude inside `<source>` tags.
+4. Claude's answer streams back over Server-Sent Events, citing sources by number.
+
+```
+similarity = (a · b) / (‖a‖ · ‖b‖)      # 1.0 = identical meaning, 0 = unrelated
+```
+
+### Database schema
 
 ```sql
 CREATE TABLE documents (
@@ -35,89 +99,12 @@ CREATE TABLE documents (
     text        TEXT NOT NULL,
     embedding   BLOB NOT NULL,     -- raw float32 bytes of the vector
     dim         INTEGER NOT NULL,
-    metadata    TEXT DEFAULT '{}', -- JSON (e.g. category)
+    metadata    TEXT DEFAULT '{}', -- JSON: category, source path, line range, mtime
     created_at  REAL NOT NULL
 );
 CREATE INDEX idx_documents_created_at ON documents(created_at);
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- e.g. embedding model
 ```
-
-Search loads the stored vectors and ranks them by cosine similarity to the
-query vector (exact brute-force nearest-neighbour — simple and fast for demos).
-
----
-
-## Architecture
-
-```
-        ┌──────────────┐   text    ┌───────────────┐  384-d vector  ┌──────────────┐
- User → │  demo.py     │ ────────► │ embedding.py  │ ─────────────► │ vector_db.py │
-        │ (Streamlit)  │           │ (transformer  │                │  (SQLite)    │
-        │              │ ◄──────── │  or fallback) │ ◄───────────── │              │
-        └──────────────┘  results  └───────────────┘   cosine sim   └──────────────┘
-                 ▲                          search_engine.py ties these together
-```
-
-**Tech stack:** Python · SQLite · NumPy · sentence-transformers
-(`all-MiniLM-L6-v2`) · Streamlit.
-
-The app has a built-in **offline fallback embedder**, so it runs even without
-internet access or the heavy ML dependency — great for a live demo where WiFi
-might fail.
-
----
-
-## Quick start
-
-```bash
-# 1. (optional) create a virtual environment
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-
-# 2. install dependencies
-pip install -r requirements.txt
-
-# 3. run the web app
-streamlit run demo.py
-```
-
-Then, in the app: click **"Load sample documents"** in the sidebar and try a
-search like `I enjoy sports` or `king on throne`.
-
-### Command-line usage (no browser needed)
-
-```bash
-python cli.py load-samples
-python cli.py search "artificial intelligence and data" --top-k 3
-python cli.py add "Deep learning powers modern AI" --category technology
-python cli.py stats
-```
-
-### Search the files in a folder
-
-Index every text/code file in a folder (defaults to the current directory),
-then search their contents by meaning. Files are split into ~800-char chunks
-and results show `path:start-end` lines. Re-running `index` is incremental —
-unchanged files are skipped, edited files re-embedded, deleted files removed.
-
-```bash
-python cli.py index                       # current folder
-python cli.py index C:\path\to\folder     # any other folder
-python cli.py search "how are similarity scores calculated"
-```
-
-In the web app, use **📁 Index a Folder** in the sidebar.
-
----
-
-## Running the tests
-
-```bash
-pip install pytest
-python -m pytest tests/ -q
-```
-
-The tests use the deterministic offline embedder and a temporary database, so
-they need no internet and run in a second.
 
 ---
 
@@ -125,52 +112,35 @@ they need no internet and run in a second.
 
 | File | Purpose |
 |------|---------|
-| `demo.py` | Streamlit web UI (search, add, browse) |
-| `embedding.py` | Embedding service (transformer + offline fallback) |
-| `vector_db.py` | SQLite vector database + cosine similarity search |
-| `search_engine.py` | High-level facade combining the two |
-| `folder_indexer.py` | Walks a folder, chunks & embeds files (incremental) |
-| `sample_data.py` | Demo corpus and example queries |
+| `app.py` | FastAPI server: JSON API + serves the UI |
+| `static/index.html` | Single-page web UI (no build step) |
+| `rag.py` | Retrieval-augmented answers with Claude (streaming) |
+| `search_engine.py` | Facade combining embeddings, database and indexing |
+| `embedding.py` | Transformer embeddings + offline fallback |
+| `vector_db.py` | SQLite vector store + cosine similarity search |
+| `folder_indexer.py` | Walks a folder, chunks & embeds files incrementally |
 | `cli.py` | Command-line interface |
-| `tests/test_demo.py` | Unit tests |
-| `requirements.txt` | Python dependencies |
-| `data/vectors.db` | SQLite database (auto-created on first run) |
+| `sample_data.py` | Demo corpus and example queries |
+| `tests/` | Unit and API tests |
 
 ---
 
-## How it works, step by step
+## Tests
 
-1. **Encoding** — `embedding.py` converts each piece of text into a
-   384-dimensional unit vector. Similar meanings → nearby vectors.
-2. **Storage** — `vector_db.py` writes the text, its vector (as a BLOB) and
-   metadata into the `documents` table in SQLite.
-3. **Search** — a query is encoded the same way, then compared against every
-   stored vector with **cosine similarity**; the top-k highest scores are
-   returned.
-
-Cosine similarity between vectors **a** and **b**:
-
+```bash
+python -m pytest tests -q
 ```
-similarity = (a · b) / (‖a‖ · ‖b‖)      # 1.0 = identical meaning, 0 = unrelated
-```
+
+Tests use the deterministic offline embedder, a temporary database and a mocked Claude
+stream, so they need no internet or API key.
 
 ---
 
 ## Scaling beyond the demo
 
-This project uses exact search, which is ideal up to tens of thousands of
-documents. For production scale:
+Exact search is ideal up to tens of thousands of chunks. For larger corpora:
 
-- **FAISS / Annoy** — approximate nearest-neighbour search for millions of vectors.
+- **FAISS / HNSW** — approximate nearest-neighbour search for millions of vectors.
 - **PostgreSQL + `pgvector`** — vector similarity as a native SQL operator.
-- **Redis / caching** — cache frequent query embeddings.
+- **Hybrid search** — combine BM25 keyword scores with vector scores.
 - **Multilingual model** — swap in `multilingual-e5` for cross-language search.
-
----
-
-## Real-world use cases
-
-Semantic search powers product recommendations, document & FAQ retrieval,
-Q&A systems, plagiarism detection, and customer-support ticket matching — and
-is the retrieval foundation for modern **RAG** (retrieval-augmented generation)
-AI systems.

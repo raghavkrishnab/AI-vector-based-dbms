@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vector Search</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
+<style>
+:root {
+  --bg: #f6f7fb; --surface: #ffffff; --surface-2: #f0f2f8; --border: #e3e6ef;
+  --text: #151826; --muted: #62687d; --faint: #9aa0b3;
+  --accent: #5b5bd6; --accent-2: #8b5cf6; --accent-soft: #ecebff; --accent-text: #4a48c4;
+  --good: #16a36a; --warn: #d98a0b; --bad: #d64545;
+  --mark: #fff1a8; --code-bg: #f3f4f9;
+  --shadow: 0 1px 2px rgba(20,24,40,.05), 0 8px 24px rgba(20,24,40,.06);
+  --radius: 14px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f17; --surface: #151824; --surface-2: #1c2030; --border: #272c3f;
+    --text: #e8eaf3; --muted: #9ba1b8; --faint: #666d86;
+    --accent: #8583ff; --accent-2: #a78bfa; --accent-soft: #23234a; --accent-text: #b3b1ff;
+    --mark: #5a4b12; --code-bg: #1b1f2e;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f17; --surface: #151824; --surface-2: #1c2030; --border: #272c3f;
+  --text: #e8eaf3; --muted: #9ba1b8; --faint: #666d86;
+  --accent: #8583ff; --accent-2: #a78bfa; --accent-soft: #23234a; --accent-text: #b3b1ff;
+  --mark: #5a4b12; --code-bg: #1b1f2e;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--text); min-height: 100vh;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+code, pre, .mono { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
+[hidden] { display: none !important; }
+
+/* ---------- top bar ---------- */
+.topbar {
+  position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px;
+  padding: 10px 24px; background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
+.logo {
+  width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; font-size: 16px;
+}
+.pills { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--muted); font-size: 12.5px; white-space: nowrap;
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.dot.on { background: var(--good); } .dot.warn { background: var(--warn); }
+.icon-btn {
+  border: 1px solid var(--border); background: var(--surface); border-radius: 10px;
+  height: 34px; min-width: 34px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px;
+}
+.icon-btn:hover { border-color: var(--accent); }
+
+/* ---------- hero + search ---------- */
+main { max-width: 900px; margin: 0 auto; padding: 0 20px 80px; }
+.hero { text-align: center; padding: 56px 0 18px; transition: padding .25s ease; }
+body.has-results .hero { padding-top: 22px; }
+body.has-results .hero h1, body.has-results .hero p { display: none; }
+.hero h1 {
+  font-size: clamp(30px, 5vw, 44px); line-height: 1.1; letter-spacing: -.03em; margin: 0 0 10px;
+}
+.grad { background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hero p { color: var(--muted); margin: 0 auto 26px; max-width: 560px; }
+
+.searchbox {
+  display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 16px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow);
+}
+.searchbox:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft), var(--shadow); }
+.searchbox input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font-size: 17px; padding: 8px 0; }
+.kbd { font-size: 11px; color: var(--faint); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; }
+.go {
+  border: 0; border-radius: 11px; padding: 10px 18px; font-weight: 600; color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+.go:disabled { opacity: .6; cursor: default; }
+
+.controls { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; justify-content: center; }
+.segmented { display: inline-flex; padding: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 11px; }
+.segmented button { border: 0; background: transparent; padding: 6px 14px; border-radius: 8px; color: var(--muted); font-weight: 550; }
+.segmented button.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.field { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+.field select, .field input[type=number] {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px;
+}
+.examples { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 18px; }
+body.has-results .examples { display: none; }
+.chip {
+  border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+  padding: 6px 12px; border-radius: 999px; font-size: 13.5px;
+}
+.chip:hover { color: var(--accent-text); border-color: var(--accent); }
+
+/* ---------- results ---------- */
+.meta-line { color: var(--faint); font-size: 13px; margin: 22px 2px 10px; display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.answer { padding: 18px 20px; margin-top: 18px; position: relative; overflow: hidden; }
+.answer::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.answer-head { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; }
+.answer-head .model { margin-left: auto; font-weight: 400; color: var(--faint); font-size: 12.5px; }
+.answer-body { overflow-wrap: anywhere; }
+.answer-body p { margin: 0 0 10px; }
+.answer-body ul, .answer-body ol { margin: 0 0 10px; padding-left: 22px; }
+.answer-body h3, .answer-body h4 { margin: 14px 0 6px; font-size: 15.5px; }
+.answer-body code { background: var(--code-bg); padding: 1px 5px; border-radius: 5px; font-size: .9em; }
+.answer-body pre { background: var(--code-bg); padding: 12px; border-radius: 10px; overflow-x: auto; }
+.answer-body pre code { background: none; padding: 0; }
+.cite {
+  display: inline-grid; place-items: center; min-width: 19px; height: 19px; padding: 0 5px; margin: 0 1px;
+  border: 0; border-radius: 6px; background: var(--accent-soft); color: var(--accent-text);
+  font-size: 11.5px; font-weight: 650; vertical-align: 2px;
+}
+.cite:hover { background: var(--accent); color: #fff; }
+.cursor { display: inline-block; width: 7px; height: 1em; background: var(--accent); vertical-align: -2px; border-radius: 2px; animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.error-box { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); border-radius: 10px; padding: 10px 12px; }
+.thinking { color: var(--muted); display: flex; align-items: center; gap: 10px; }
+.spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.section-title { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 26px 2px 10px; font-weight: 600; }
+.results { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.result { padding: 14px 16px; transition: border-color .15s, box-shadow .15s; }
+.result.flash { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.r-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.rank { flex: none; width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; background: var(--surface-2); color: var(--muted); font-size: 12px; font-weight: 650; }
+.r-title { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.r-title .lines { color: var(--faint); font-weight: 400; font-size: 13px; }
+.tag { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
+.score { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+.meter { width: 64px; height: 6px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+.meter > i { display: block; height: 100%; border-radius: 99px; }
+.score b { font-variant-numeric: tabular-nums; font-size: 13px; width: 38px; text-align: right; }
+.snippet {
+  margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; color: var(--text);
+  max-height: 7.8em; overflow: hidden; position: relative;
+}
+.snippet.code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12.5px; background: var(--code-bg); padding: 10px 12px; border-radius: 10px; }
+.snippet.clamped::after { content: ""; position: absolute; inset: auto 0 0 0; height: 2.4em; background: linear-gradient(transparent, var(--surface)); }
+.snippet.code.clamped::after { background: linear-gradient(transparent, var(--code-bg)); }
+.snippet.open { max-height: none; }
+.snippet.open::after { display: none; }
+mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1px; }
+.r-actions { display: flex; gap: 12px; margin-top: 8px; }
+.link { border: 0; background: none; padding: 0; color: var(--accent-text); font-size: 13px; }
+.link:hover { text-decoration: underline; }
+
+.empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+.empty .big { font-size: 34px; margin-bottom: 6px; }
+
+/* ---------- drawer ---------- */
+.scrim { position: fixed; inset: 0; background: rgba(8,10,20,.4); z-index: 40; opacity: 0; pointer-events: none; transition: opacity .2s; }
+.scrim.open { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(460px, 100vw); z-index: 50;
+  background: var(--surface); border-left: 1px solid var(--border); box-shadow: -20px 0 40px rgba(0,0,0,.12);
+  transform: translateX(100%); transition: transform .25s ease; display: flex; flex-direction: column;
+}
+.drawer.open { transform: none; }
+.drawer-head { display: flex; align-items: center; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+.drawer-head h2 { margin: 0; font-size: 17px; }
+.drawer-head .icon-btn { margin-left: auto; }
+.tabs { display: flex; gap: 4px; padding: 10px 14px 0; border-bottom: 1px solid var(--border); }
+.tabs button { border: 0; background: none; padding: 8px 12px; color: var(--muted); border-bottom: 2px solid transparent; font-weight: 550; }
+.tabs button.active { color: var(--text); border-color: var(--accent); }
+.drawer-body { padding: 18px; overflow-y: auto; flex: 1; }
+.drawer-body label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 6px; font-weight: 550; }
+.drawer-body input[type=text], .drawer-body textarea {
+  width: 100%; border: 1px solid var(--border); background: var(--bg); border-radius: 10px; padding: 9px 11px; outline: 0;
+}
+.drawer-body input[type=text]:focus, .drawer-body textarea:focus { border-color: var(--accent); }
+.drawer-body textarea { min-height: 120px; resize: vertical; }
+.help { font-size: 12.5px; color: var(--faint); margin: 6px 0 14px; }
+.btn { border: 1px solid var(--border); background: var(--surface); padding: 8px 14px; border-radius: 10px; font-weight: 550; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger { color: var(--bad); }
+.btn.danger:hover { border-color: var(--bad); }
+.btn:disabled { opacity: .6; cursor: default; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.report { margin-top: 14px; font-size: 13.5px; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
+.stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+.stat { background: var(--bg); border-radius: 8px; padding: 8px; text-align: center; }
+.stat b { display: block; font-size: 18px; }
+.stat span { font-size: 11.5px; color: var(--muted); }
+.lib-item { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); align-items: flex-start; }
+.lib-item .t { flex: 1; min-width: 0; font-size: 13.5px; }
+.lib-item .t div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-item .t small { color: var(--faint); }
+.divider { height: 1px; background: var(--border); margin: 22px 0; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0; z-index: 60;
+  background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px;
+  transition: all .2s; pointer-events: none; max-width: calc(100vw - 32px);
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+@media (max-width: 640px) {
+  .topbar { padding: 10px 14px; }
+  .pills .pill.hide-sm, .kbd, #manage-btn span { display: none; }
+  .hero { padding-top: 32px; }
+  .meter { display: none; }
+}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><div class="logo">✦</div><span>Vector Search</span></div>
+  <div class="pills">
+    <span class="pill hide-sm" id="pill-embed"><span class="dot"></span><span>Loading…</span></span>
+    <span class="pill" id="pill-docs"><span>— docs</span></span>
+    <span class="pill hide-sm" id="pill-ai"><span class="dot"></span><span>AI</span></span>
+  </div>
+  <button class="icon-btn" id="theme-btn" title="Toggle theme" aria-label="Toggle theme">◐</button>
+  <button class="icon-btn" id="manage-btn">☰ <span>Data</span></button>
+</header>
+
+<main>
+  <section class="hero">
+    <h1>Search by <span class="grad">meaning</span>, not keywords</h1>
+    <p>An AI-powered vector database. Your documents and files are embedded with a transformer model, retrieved by cosine similarity, and answered by Claude.</p>
+
+    <form class="searchbox" id="search-form" autocomplete="off">
+      <span aria-hidden="true">🔎</span>
+      <input id="q" type="text" placeholder="Ask a question or describe what you're looking for…" aria-label="Search query">
+      <span class="kbd">/</span>
+      <button class="go" id="go" type="submit">Search</button>
+    </form>
+
+    <div class="controls">
+      <div class="segmented" role="tablist">
+        <button type="button" data-mode="ask" class="active">✦ Ask AI</button>
+        <button type="button" data-mode="search">Semantic search</button>
+      </div>
+      <label class="field">Results
+        <select id="top-k"><option>3</option><option>5</option><option selected>6</option><option>10</option><option>20</option></select>
+      </label>
+      <label class="field">Category
+        <select id="category"><option value="">All</option></select>
+      </label>
+    </div>
+    <div class="examples" id="examples"></div>
+  </section>
+
+  <section id="output"></section>
+</main>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-label="Manage data">
+  <div class="drawer-head"><h2>Manage data</h2><button class="icon-btn" id="close-drawer" aria-label="Close">✕</button></div>
+  <nav class="tabs">
+    <button class="active" data-tab="index">Index folder</button>
+    <button data-tab="add">Add text</button>
+    <button data-tab="library">Library</button>
+  </nav>
+  <div class="drawer-body">
+    <div data-panel="index">
+      <label for="folder">Folder path</label>
+      <input type="text" id="folder" class="mono">
+      <p class="help">Text and code files are split into chunks and embedded. Re-indexing only processes changed files. Skips .git, venv, node_modules and files over 1 MB.</p>
+      <button class="btn primary" id="index-btn">Index folder</button>
+      <div id="index-report"></div>
+      <div class="divider"></div>
+      <label>Demo corpus</label>
+      <p class="help">16 short sentences across sports, tech, food and more — good for trying semantic matching.</p>
+      <div class="row">
+        <button class="btn" id="samples-btn">Load sample documents</button>
+        <button class="btn danger" id="clear-btn">Clear database</button>
+      </div>
+    </div>
+    <div data-panel="add" hidden>
+      <label for="add-text">Document text</label>
+      <textarea id="add-text" placeholder="Paste a note, paragraph, FAQ answer…"></textarea>
+      <label for="add-cat" style="margin-top:12px">Category (optional)</label>
+      <input type="text" id="add-cat" placeholder="e.g. notes">
+      <div class="row" style="margin-top:14px"><button class="btn primary" id="add-btn">Add document</button></div>
+    </div>
+    <div data-panel="library" hidden>
+      <input type="text" id="lib-filter" placeholder="Filter by text or path…">
+      <div id="library" style="margin-top:8px"></div>
+    </div>
+  </div>
+</aside>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const state = { mode: "ask", stats: null, controller: null, library: [] };
+
+// ---------- theme ----------
+try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+$("#theme-btn").onclick = () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("theme", root.dataset.theme); } catch {}
+};
+
+// ---------- helpers ----------
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2800);
+}
+async function api(path, opts = {}) {
+  const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail ? (typeof data.detail === "string" ? data.detail : "Invalid request") : res.statusText);
+  return data;
+}
+// Transformer cosine scores for good matches typically sit around 0.3-0.7.
+function scoreColor(s) { return s >= 0.5 ? "var(--good)" : s >= 0.25 ? "var(--warn)" : "var(--bad)"; }
+
+const STOP = new Set("a an the and or of to in on for is are was be with by at as it this that what how why when who which do does i my me you your can from".split(" "));
+function highlight(text, query) {
+  const terms = [...new Set(query.toLowerCase().match(/[a-z0-9_]{3,}/g) || [])].filter(t => !STOP.has(t));
+  let html = esc(text);
+  if (!terms.length) return html;
+  // Words of 5+ chars also match as prefixes ("document" -> "documents"); shorter ones must match whole.
+  const re = new RegExp("\\b(" + terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + (t.length >= 5 ? "\\w*" : "\\b")).join("|") + ")", "gi");
+  return html.replace(re, "<mark>$1</mark>");
+}
+
+// Small, safe Markdown renderer for streamed answers (input is escaped first).
+function renderMarkdown(src) {
+  const blocks = [];
+  src = src.replace(/```[\w-]*\n?([\s\S]*?)(```|$)/g, (_, code) => { blocks.push(code); return `\n\u0000${blocks.length - 1}\u0000\n`; });
+  const inline = s => esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[(\d{1,2})\]/g, '<button class="cite" data-n="$1">$1</button>');
+  const out = []; let list = null;
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (const line of src.split("\n")) {
+    const code = line.match(/^\u0000(\d+)\u0000$/);
+    if (code) { closeList(); out.push(`<pre><code>${esc(blocks[+code[1]])}</code></pre>`); continue; }
+    let m;
+    if ((m = line.match(/^\s*[-*]\s+(.*)/))) { if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; } out.push(`<li>${inline(m[1])}</li>`); }
+    else if ((m = line.match(/^\s*\d+[.)]\s+(.*)/))) { if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; } out.push(`<li>${inline(m[1])}</li>`); }
+    else if ((m = line.match(/^#{1,4}\s+(.*)/))) { closeList(); out.push(`<h4>${inline(m[1])}</h4>`); }
+    else if (!line.trim()) { closeList(); }
+    else { closeList(); out.push(`<p>${inline(line)}</p>`); }
+  }
+  closeList();
+  return out.join("").replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${esc(blocks[+i])}</code>`);
+}
+
+// ---------- stats / header ----------
+async function loadStats() {
+  const s = state.stats = await api("/api/stats");
+  $("#pill-embed").innerHTML = `<span class="dot ${s.semantic ? "on" : "warn"}"></span><span>${s.semantic ? esc(s.backend.replace("sentence-transformers:", "")) : "offline embedder"} · ${s.dim}d</span>`;
+  $("#pill-embed").title = s.semantic ? "Transformer embeddings active" : "sentence-transformers not available — using keyword-hashing fallback";
+  $("#pill-docs").innerHTML = `<span>${s.documents.toLocaleString()} docs</span>`;
+  $("#pill-ai").innerHTML = `<span class="dot ${s.ai_configured ? "on" : "warn"}"></span><span>${esc(s.ai_model)}</span>`;
+  $("#pill-ai").title = s.ai_configured ? "Claude answers enabled" : "Set ANTHROPIC_API_KEY to enable AI answers";
+  const sel = $("#category"), cur = sel.value;
+  sel.innerHTML = '<option value="">All</option>' + s.categories.map(c => `<option ${c === cur ? "selected" : ""}>${esc(c)}</option>`).join("");
+  if (!$("#folder").value) $("#folder").value = s.cwd;
+  $("#examples").innerHTML = s.examples.map(e => `<button class="chip" type="button">${esc(e)}</button>`).join("");
+  if (!document.body.classList.contains("has-results") && s.documents === 0) {
+    $("#output").innerHTML = `<div class="empty"><div class="big">🗂️</div>Your database is empty.<br><button class="link" onclick="openDrawer('index')">Index a folder</button> or <button class="link" id="empty-samples">load sample documents</button> to get started.</div>`;
+    $("#empty-samples").onclick = loadSamples;
+  } else if (!document.body.classList.contains("has-results")) {
+    $("#output").innerHTML = "";
+  }
+}
+$("#examples").addEventListener("click", e => {
+  if (e.target.classList.contains("chip")) { $("#q").value = e.target.textContent; run(); }
+});
+
+// ---------- mode ----------
+function setMode(mode) {
+  state.mode = mode;
+  $$(".segmented button").forEach(x => x.classList.toggle("active", x.dataset.mode === mode));
+  $("#go").textContent = mode === "ask" ? "Ask" : "Search";
+}
+$$(".segmented button").forEach(b => b.onclick = () => {
+  setMode(b.dataset.mode);
+  if ($("#q").value.trim() && document.body.classList.contains("has-results")) run();
+});
+setMode("ask");
+
+// ---------- search / ask ----------
+$("#search-form").onsubmit = e => { e.preventDefault(); run(); };
+document.addEventListener("keydown", e => {
+  if (e.key === "/" && document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "TEXTAREA") { e.preventDefault(); $("#q").focus(); }
+  if (e.key === "Escape") closeDrawer();
+});
+
+function body() {
+  return JSON.stringify({ query: $("#q").value.trim(), top_k: +$("#top-k").value, category: $("#category").value || null });
+}
+
+function resultCard(r, i, query) {
+  const m = r.metadata || {};
+  const isFile = "path" in m;
+  const title = isFile
+    ? `${esc(m.path)} <span class="lines">L${m.start_line}–${m.end_line}</span>`
+    : `Document <span class="lines mono">${esc(r.doc_id)}</span>`;
+  const tag = m.category ? `<span class="tag">${esc(m.category)}</span>` : "";
+  const pct = Math.max(0, Math.min(1, r.score));
+  return `<article class="card result" id="src-${i + 1}">
+    <div class="r-head">
+      <span class="rank">${i + 1}</span>
+      <span class="r-title" title="${esc(isFile ? m.path : r.text)}">${title}</span>
+      ${tag}
+      <span class="score" title="Cosine similarity"><span class="meter"><i style="width:${pct * 100}%;background:${scoreColor(r.score)}"></i></span><b style="color:${scoreColor(r.score)}">${r.score.toFixed(2)}</b></span>
+    </div>
+    <div class="snippet ${isFile ? "code" : ""}">${highlight(r.text, query)}</div>
+    <div class="r-actions"><button class="link more" hidden>Show more</button><button class="link copy">Copy</button></div>
+  </article>`;
+}
+
+function renderResults(container, results, query) {
+  container.innerHTML = results.map((r, i) => resultCard(r, i, query)).join("");
+  $$(".result", container).forEach((card, i) => {
+    const sn = $(".snippet", card), more = $(".more", card);
+    if (sn.scrollHeight > sn.clientHeight + 4) { sn.classList.add("clamped"); more.hidden = false; }
+    more.onclick = () => { const open = sn.classList.toggle("open"); more.textContent = open ? "Show less" : "Show more"; };
+    $(".copy", card).onclick = () => navigator.clipboard.writeText(results[i].text).then(() => toast("Copied to clipboard"));
+  });
+}
+
+function metaLine(out) {
+  return `<div class="meta-line"><span>${out.results.length} result${out.results.length === 1 ? "" : "s"} from ${out.num_docs_searched.toLocaleString()} documents</span><span>embed ${out.encode_ms} ms · search ${out.search_ms} ms</span></div>`;
+}
+
+async function run() {
+  const query = $("#q").value.trim();
+  if (!query) { $("#q").focus(); return; }
+  state.controller?.abort();
+  const controller = state.controller = new AbortController();
+  document.body.classList.add("has-results");
+  const output = $("#output");
+  $("#go").disabled = true;
+
+  try {
+    if (state.mode === "search") {
+      output.innerHTML = `<div class="meta-line"><span class="thinking"><span class="spinner"></span>Searching…</span></div>`;
+      const out = await api("/api/search", { method: "POST", body: body(), signal: controller.signal });
+      output.innerHTML = out.results.length
+        ? metaLine(out) + `<div class="results"></div>`
+        : `<div class="empty"><div class="big">🤷</div>No matching documents.</div>`;
+      if (out.results.length) renderResults($(".results", output), out.results, query);
+      return;
+    }
+
+    output.innerHTML = `
+      <div class="card answer"><div class="answer-head">✦ AI answer <span class="model"></span></div>
+        <div class="answer-body"><div class="thinking"><span class="spinner"></span>Retrieving relevant sources…</div></div></div>
+      <div class="sources"></div>`;
+    const answerBody = $(".answer-body", output);
+    const res = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: body(), signal: controller.signal });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+
+    const reader = res.body.getReader(), decoder = new TextDecoder();
+    let buf = "", text = "", pending = false;
+    const paint = (done) => {
+      answerBody.innerHTML = renderMarkdown(text) + (done ? "" : '<span class="cursor"></span>');
+    };
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        if (!line.startsWith("data: ")) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (ev.type === "sources") {
+          $(".sources", output).innerHTML = ev.results.length
+            ? `<div class="section-title">Sources</div>` + metaLine(ev).replace('class="meta-line"', 'class="meta-line" style="margin-top:0"') + `<div class="results"></div>` : "";
+          if (ev.results.length) renderResults($(".results", output), ev.results, query);
+          answerBody.innerHTML = `<div class="thinking"><span class="spinner"></span>Claude is reading ${ev.results.length} sources…</div>`;
+        } else if (ev.type === "delta") {
+          text += ev.text;
+          if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; paint(false); }); }
+        } else if (ev.type === "done") {
+          text ? paint(true) : (answerBody.innerHTML = "<p>(empty response)</p>");
+          $(".model", output).textContent = ev.model;
+        } else if (ev.type === "error") {
+          answerBody.innerHTML = (text ? renderMarkdown(text) : "") + `<div class="error-box">${esc(ev.message)}</div>`;
+        }
+      }
+    }
+    requestAnimationFrame(() => { if (text && !$(".error-box", answerBody)) paint(true); });
+  } catch (err) {
+    if (err.name !== "AbortError") output.innerHTML = `<div class="error-box" style="margin-top:20px">${esc(err.message)}</div>`;
+  } finally {
+    if (state.controller === controller) $("#go").disabled = false;
+  }
+}
+
+// Citation chips scroll to and flash the matching source card.
+$("#output").addEventListener("click", e => {
+  const cite = e.target.closest(".cite");
+  if (!cite) return;
+  const card = $("#src-" + cite.dataset.n);
+  if (!card) return;
+  card.scrollIntoView({ behavior: "smooth", block: "center" });
+  card.classList.add("flash"); setTimeout(() => card.classList.remove("flash"), 1400);
+});
+
+// ---------- drawer ----------
+function openDrawer(tab) {
+  $("#drawer").classList.add("open"); $("#scrim").classList.add("open");
+  if (tab) selectTab(tab);
+}
+function closeDrawer() { $("#drawer").classList.remove("open"); $("#scrim").classList.remove("open"); }
+function selectTab(tab) {
+  $$(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+  $$("[data-panel]").forEach(p => p.hidden = p.dataset.panel !== tab);
+  if (tab === "library") loadLibrary();
+}
+$("#manage-btn").onclick = () => openDrawer();
+$("#close-drawer").onclick = closeDrawer;
+$("#scrim").onclick = closeDrawer;
+$$(".tabs button").forEach(b => b.onclick = () => selectTab(b.dataset.tab));
+
+async function withBusy(btn, label, fn) {
+  const old = btn.textContent; btn.disabled = true; btn.textContent = label;
+  try { await fn(); } catch (err) { toast(err.message); } finally { btn.disabled = false; btn.textContent = old; }
+}
+
+$("#index-btn").onclick = e => withBusy(e.target, "Indexing…", async () => {
+  const r = await api("/api/index", { method: "POST", body: JSON.stringify({ folder: $("#folder").value }) });
+  $("#index-report").innerHTML = `<div class="report"><div class="mono" style="font-size:12px;overflow-wrap:anywhere">${esc(r.folder)}</div>
+    <div class="stat-grid"><div class="stat"><b>${r.indexed_files}</b><span>files indexed</span></div>
+    <div class="stat"><b>${r.chunks_added}</b><span>chunks added</span></div>
+    <div class="stat"><b>${r.skipped_unchanged}</b><span>unchanged</span></div></div>
+    ${r.removed_files ? `<div class="help" style="margin:8px 0 0">${r.removed_files} deleted files removed</div>` : ""}
+    ${r.errors.length ? `<div class="help" style="color:var(--bad);margin:8px 0 0">${r.errors.length} errors</div>` : ""}</div>`;
+  toast(`Indexed ${r.indexed_files} files`);
+  loadStats();
+});
+
+async function loadSamples() {
+  const r = await api("/api/samples", { method: "POST" });
+  toast(`Added ${r.added} sample documents`);
+  loadStats();
+}
+$("#samples-btn").onclick = e => withBusy(e.target, "Loading…", loadSamples);
+
+$("#clear-btn").onclick = e => {
+  if (!confirm("Delete every document from the database? This cannot be undone.")) return;
+  withBusy(e.target, "Clearing…", async () => {
+    await api("/api/documents", { method: "DELETE" });
+    toast("Database cleared"); document.body.classList.remove("has-results"); loadStats(); loadLibrary();
+  });
+};
+
+$("#add-btn").onclick = e => {
+  const text = $("#add-text").value.trim();
+  if (!text) { toast("Document text is empty"); return; }
+  withBusy(e.target, "Embedding…", async () => {
+    await api("/api/documents", { method: "POST", body: JSON.stringify({ text, category: $("#add-cat").value }) });
+    $("#add-text").value = ""; toast("Document added"); loadStats();
+  });
+};
+
+async function loadLibrary() {
+  state.library = await api("/api/documents?limit=2000");
+  renderLibrary();
+}
+function renderLibrary() {
+  const f = $("#lib-filter").value.toLowerCase();
+  const items = state.library.filter(d => !f || d.text.toLowerCase().includes(f) || (d.metadata.path || "").toLowerCase().includes(f));
+  $("#library").innerHTML = items.length ? items.slice(0, 300).map(d => `
+    <div class="lib-item"><div class="t"><div title="${esc(d.text.slice(0, 300))}">${esc(d.metadata.path ? `${d.metadata.path} · L${d.metadata.start_line}–${d.metadata.end_line}` : d.text)}</div>
+      <small>${esc(d.metadata.category || "uncategorized")} · ${esc(d.doc_id)}</small></div>
+      <button class="link" data-del="${esc(d.doc_id)}" style="color:var(--bad)">Delete</button></div>`).join("")
+    + (items.length > 300 ? `<p class="help">Showing 300 of ${items.length}. Filter to narrow down.</p>` : "")
+    : `<p class="help">No documents.</p>`;
+}
+$("#lib-filter").oninput = renderLibrary;
+$("#library").addEventListener("click", async e => {
+  const id = e.target.dataset.del;
+  if (!id) return;
+  try {
+    await api("/api/documents/" + encodeURIComponent(id), { method: "DELETE" });
+    state.library = state.library.filter(d => d.doc_id !== id); renderLibrary(); loadStats();
+  } catch (err) { toast(err.message); }
+});
+
+loadStats()
+  .then(() => { if (!state.stats.ai_configured) setMode("search"); })
+  .catch(err => toast("Could not reach server: " + err.message));
+</script>
+</body>
+</html>
