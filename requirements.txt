@@ -1,0 +1,12 @@
+# Core dependencies for the Vector Search Database demo
+numpy>=1.24
+streamlit>=1.31
+pandas>=2.0
+
+# Embedding model (optional but recommended for full semantic quality).
+# If this is not installed, or the model cannot be downloaded, the app
+# automatically falls back to a built-in offline hashing embedder.
+sentence-transformers>=2.2
+
+# Testing
+pytest>=7.0
