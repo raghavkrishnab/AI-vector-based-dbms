@@ -84,7 +84,14 @@ def build_user_message(question: str, results: List[SearchResult]) -> str:
         f'<source index="{i}" label="{source_label(r)}">\n{r.text}\n</source>'
         for i, r in enumerate(results, start=1)
     ]
-    return "<sources>\n" + "\n".join(blocks) + "\n</sources>\n\nQuestion: " + question
+    # Small local models follow formatting best when the rule sits right next to the question.
+    return (
+        "<sources>\n" + "\n".join(blocks) + "\n</sources>\n\n"
+        f"Question: {question}\n\n"
+        "Answer in a few sentences using only the sources above. End every sentence that uses "
+        "a source with its number in square brackets, for example: "
+        "\"Unchanged files are skipped [2].\""
+    )
 
 
 # --------------------------------------------------------------------------- #
