@@ -8,6 +8,11 @@ httpx>=0.27            # talks to the local Ollama server
 # If unavailable, the app falls back to a built-in offline hashing embedder.
 sentence-transformers>=2.2
 
+# MS MARCO dataset import (downloaded from Hugging Face on demand)
+pandas>=2.0
+pyarrow>=14
+huggingface_hub>=0.20
+
 # Generated answers (optional, free): install Ollama from https://ollama.com
 # and run `ollama pull llama3.2`. No Python package needed.
 

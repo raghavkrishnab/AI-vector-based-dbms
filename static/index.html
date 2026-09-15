@@ -163,6 +163,23 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .link { border: 0; background: none; padding: 0; color: var(--accent-text); font-size: 13px; }
 .link:hover { text-decoration: underline; }
 
+.switch { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
+.switch input { position: absolute; opacity: 0; pointer-events: none; }
+.switch .track { width: 32px; height: 18px; border-radius: 99px; background: var(--border); position: relative; transition: background .15s; }
+.switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.switch input:checked + .track { background: var(--accent); }
+.switch input:checked + .track::after { transform: translateX(14px); }
+.switch input:focus-visible + .track { box-shadow: 0 0 0 3px var(--accent-soft); }
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.r-sub { margin: 6px 0 0 34px; font-size: 12.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.r-sub .ok { color: var(--good); font-weight: 600; }
+.r-title a { color: inherit; text-decoration: none; }
+.r-title a:hover { color: var(--accent-text); text-decoration: underline; }
+.progress { height: 8px; border-radius: 99px; background: var(--bg); overflow: hidden; margin-top: 10px; }
+.progress > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .3s; }
+.drawer-body select { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+.facts { margin: 0 0 14px; padding-left: 18px; font-size: 13px; color: var(--muted); }
+.facts li { margin: 3px 0; }
 .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
 .empty .big { font-size: 34px; margin-bottom: 6px; }
 
@@ -257,6 +274,9 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
       <label class="field">Category
         <select id="category"><option value="">All</option></select>
       </label>
+      <label class="switch" id="rerank-label" title="Re-rank the top candidates with a cross-encoder trained on MS MARCO">
+        <input type="checkbox" id="rerank" checked><span class="track"></span>MS MARCO rerank
+      </label>
     </div>
     <div class="examples" id="examples"></div>
   </section>
@@ -269,6 +289,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
   <div class="drawer-head"><h2>Manage data</h2><button class="icon-btn" id="close-drawer" aria-label="Close">✕</button></div>
   <nav class="tabs">
     <button class="active" data-tab="index">Index folder</button>
+    <button data-tab="msmarco">MS MARCO</button>
     <button data-tab="add">Add text</button>
     <button data-tab="library">Library</button>
   </nav>
@@ -285,6 +306,30 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
       <div class="row">
         <button class="btn" id="samples-btn">Load sample documents</button>
         <button class="btn danger" id="clear-btn">Clear database</button>
+      </div>
+    </div>
+    <div data-panel="msmarco" hidden>
+      <label>MS MARCO web passages</label>
+      <p class="help" style="margin-top:0">Microsoft's MS MARCO dataset holds real Bing questions paired with the web passages retrieved for them — the same data the search and rerank models were trained on. Import passages to give the database broad, real-world knowledge.</p>
+      <ul class="facts">
+        <li><b id="ms-count">0</b> passages imported so far</li>
+        <li>Re-importing never creates duplicates</li>
+        <li>Licensed for non-commercial research use</li>
+      </ul>
+      <div class="row">
+        <label class="field" style="margin:0">Split
+          <select id="ms-split"><option value="validation" selected>validation · 21 MB · 82k passages</option><option value="train">train · 175 MB · 676k passages</option></select>
+        </label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="field" style="margin:0">Passages
+          <select id="ms-limit"><option value="5000">5,000 (~1 min)</option><option value="20000" selected>20,000 (~4 min)</option><option value="50000">50,000 (~10 min)</option><option value="82000">82,000 (~15 min)</option></select>
+        </label>
+        <button class="btn primary" id="ms-import">Import</button>
+      </div>
+      <div id="ms-progress" hidden>
+        <div class="progress"><i></i></div>
+        <p class="help" id="ms-message" style="margin:6px 0 0"></p>
       </div>
     </div>
     <div data-panel="add" hidden>
@@ -329,6 +374,8 @@ async function api(path, opts = {}) {
   return data;
 }
 // Transformer cosine scores for good matches typically sit around 0.3-0.7.
+// Cross-encoder relevance is a probability: confident matches sit near 1, misses near 0.
+function relevanceColor(s) { return s >= 0.7 ? "var(--good)" : s >= 0.15 ? "var(--warn)" : "var(--bad)"; }
 function scoreColor(s) { return s >= 0.5 ? "var(--good)" : s >= 0.25 ? "var(--warn)" : "var(--bad)"; }
 
 const STOP = new Set("a an the and or of to in on for is are was be with by at as it this that what how why when who which do does i my me you your can from".split(" "));
@@ -349,7 +396,9 @@ function renderMarkdown(src) {
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-    .replace(/\[(\d{1,2})\]/g, '<button class="cite" data-n="$1">$1</button>');
+    // Citations: [3] and grouped forms like [2, 4, 6] become clickable chips.
+    .replace(/\[(\d{1,2}(?:\s*,\s*\d{1,2})*)\]/g, (_, nums) =>
+      nums.split(",").map(n => `<button class="cite" data-n="${n.trim()}">${n.trim()}</button>`).join(""));
   const out = []; let list = null;
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
   for (const line of src.split("\n")) {
@@ -372,6 +421,10 @@ async function loadStats() {
   $("#pill-embed").innerHTML = `<span class="dot ${s.semantic ? "on" : "warn"}"></span><span>${s.semantic ? esc(s.backend.replace("sentence-transformers:", "")) : "offline embedder"} · ${s.dim}d</span>`;
   $("#pill-embed").title = s.semantic ? "Transformer embeddings active" : "sentence-transformers not available — using keyword-hashing fallback";
   $("#pill-docs").innerHTML = `<span>${s.documents.toLocaleString()} docs</span>`;
+  $("#pill-docs").title = `${s.msmarco.passages.toLocaleString()} MS MARCO passages`;
+  $("#ms-count").textContent = s.msmarco.passages.toLocaleString();
+  $("#rerank-label").title = `Re-rank the top candidates with ${s.reranker.model} (${s.reranker.status})`;
+  if (["downloading", "embedding"].includes(s.msmarco.import.state)) pollImport();
   $("#pill-ai").innerHTML = `<span class="dot ${s.ai.generative ? "on" : "warn"}"></span><span>${esc(s.ai.label)}</span>`;
   $("#pill-ai").title = s.ai.generative ? "Generated answers from your local Ollama model" : s.ai.note;
   const sel = $("#category"), cur = sel.value;
@@ -409,24 +462,39 @@ document.addEventListener("keydown", e => {
 });
 
 function body() {
-  return JSON.stringify({ query: $("#q").value.trim(), top_k: +$("#top-k").value, category: $("#category").value || null });
+  return JSON.stringify({ query: $("#q").value.trim(), top_k: +$("#top-k").value, category: $("#category").value || null, rerank: $("#rerank").checked });
 }
 
 function resultCard(r, i, query) {
   const m = r.metadata || {};
   const isFile = "path" in m;
+  const isMarco = m.category === "msmarco";
+  const safeUrl = /^https?:\/\//i.test(m.url || "") ? m.url : null;
+  let host = "";
+  try { host = safeUrl ? new URL(safeUrl).hostname.replace(/^www\./, "") : ""; } catch {}
   const title = isFile
     ? `${esc(m.path)} <span class="lines">L${m.start_line}–${m.end_line}</span>`
-    : `Document <span class="lines mono">${esc(r.doc_id)}</span>`;
-  const tag = m.category ? `<span class="tag">${esc(m.category)}</span>` : "";
-  const pct = Math.max(0, Math.min(1, r.score));
+    : isMarco
+      ? (safeUrl ? `<a href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer">${esc(host)}</a>` : "Web passage")
+      : `Document <span class="lines mono">${esc(r.doc_id)}</span>`;
+  const tag = m.category ? `<span class="tag">${esc(isMarco ? "MS MARCO" : m.category)}</span>` : "";
+  const reranked = r.rerank_score !== null && r.rerank_score !== undefined;
+  const shown = reranked ? r.rerank_score : r.score;
+  const color = reranked ? relevanceColor(shown) : scoreColor(shown);
+  const pct = Math.max(0, Math.min(1, shown));
+  const scoreTitle = reranked
+    ? `MS MARCO cross-encoder relevance ${r.rerank_score.toFixed(3)} · cosine similarity ${r.score.toFixed(3)}`
+    : "Cosine similarity";
+  const sub = isMarco && m.query
+    ? `<div class="r-sub" title="${esc(m.query)}">Retrieved by Bing for “${esc(m.query)}”${m.selected ? ' · <span class="ok">✓ judged relevant</span>' : ""}</div>` : "";
   return `<article class="card result" id="src-${i + 1}">
     <div class="r-head">
       <span class="rank">${i + 1}</span>
-      <span class="r-title" title="${esc(isFile ? m.path : r.text)}">${title}</span>
+      <span class="r-title" title="${esc(isFile ? m.path : isMarco ? (safeUrl || "") : r.text)}">${title}</span>
       ${tag}
-      <span class="score" title="Cosine similarity"><span class="meter"><i style="width:${pct * 100}%;background:${scoreColor(r.score)}"></i></span><b style="color:${scoreColor(r.score)}">${r.score.toFixed(2)}</b></span>
+      <span class="score" title="${scoreTitle}"><span class="meter"><i style="width:${pct * 100}%;background:${color}"></i></span><b style="color:${color}">${shown.toFixed(2)}</b></span>
     </div>
+    ${sub}
     <div class="snippet ${isFile ? "code" : ""}">${highlight(r.text, query)}</div>
     <div class="r-actions"><button class="link more" hidden>Show more</button><button class="link copy">Copy</button></div>
   </article>`;
@@ -443,7 +511,7 @@ function renderResults(container, results, query) {
 }
 
 function metaLine(out) {
-  return `<div class="meta-line"><span>${out.results.length} result${out.results.length === 1 ? "" : "s"} from ${out.num_docs_searched.toLocaleString()} documents</span><span>embed ${out.encode_ms} ms · search ${out.search_ms} ms</span></div>`;
+  return `<div class="meta-line"><span>${out.results.length} result${out.results.length === 1 ? "" : "s"} from ${out.num_docs_searched.toLocaleString()} documents</span><span>${out.reranked ? '<span class="badge">↕ MS MARCO reranked</span> · ' : ""}embed ${out.encode_ms} ms · search ${out.search_ms} ms${out.reranked ? ` · rerank ${out.rerank_ms} ms` : ""}</span></div>`;
 }
 
 async function run() {
@@ -556,6 +624,39 @@ $("#index-btn").onclick = e => withBusy(e.target, "Indexing…", async () => {
   toast(`Indexed ${r.indexed_files} files`);
   loadStats();
 });
+
+let importTimer = null;
+function showImport(p) {
+  $("#ms-progress").hidden = false;
+  const pct = p.total ? Math.min(100, (p.done / p.total) * 100) : 0;
+  $("#ms-progress .progress > i").style.width = (p.state === "done" ? 100 : pct) + "%";
+  $("#ms-message").textContent = p.message || "";
+  $("#ms-message").style.color = p.state === "error" ? "var(--bad)" : "";
+  if (p.passages !== undefined) $("#ms-count").textContent = p.passages.toLocaleString();
+  const busy = ["downloading", "embedding"].includes(p.state);
+  $("#ms-import").disabled = busy;
+  $("#ms-import").textContent = busy ? "Importing…" : "Import";
+}
+function pollImport() {
+  if (importTimer) return;
+  importTimer = setInterval(async () => {
+    try {
+      const p = await api("/api/msmarco/status");
+      showImport(p);
+      if (!["downloading", "embedding"].includes(p.state)) {
+        clearInterval(importTimer); importTimer = null;
+        if (p.state === "done") toast(p.message);
+        loadStats();
+      }
+    } catch (err) { clearInterval(importTimer); importTimer = null; toast(err.message); }
+  }, 1000);
+}
+$("#ms-import").onclick = async () => {
+  try {
+    const p = await api("/api/msmarco/import", { method: "POST", body: JSON.stringify({ split: $("#ms-split").value, limit: +$("#ms-limit").value }) });
+    showImport(p); pollImport();
+  } catch (err) { toast(err.message); }
+};
 
 async function loadSamples() {
   const r = await api("/api/samples", { method: "POST" });

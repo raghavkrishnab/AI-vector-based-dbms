@@ -37,6 +37,7 @@ class SearchResult:
     text: str
     score: float
     metadata: Dict[str, Any]
+    rerank_score: Optional[float] = None  # set when a cross-encoder re-scored the hit
 
 
 class VectorDB:
@@ -49,6 +50,9 @@ class VectorDB:
         # connection; SearchEngine serializes access with a lock.
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # In-memory copy of all vectors, rebuilt lazily after any write, so
+        # searches over tens of thousands of rows don't re-read SQLite.
+        self._cache = None
         self._create_schema()
 
     # ------------------------------------------------------------------ #
@@ -125,6 +129,7 @@ class VectorDB:
             ),
         )
         self.conn.commit()
+        self._cache = None
         return doc_id
 
     def add_documents(self, items: List[Dict[str, Any]]) -> List[str]:
@@ -150,11 +155,13 @@ class VectorDB:
             rows,
         )
         self.conn.commit()
+        self._cache = None
         return ids
 
     def delete_document(self, doc_id: str) -> bool:
         cur = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
         self.conn.commit()
+        self._cache = None
         return cur.rowcount > 0
 
     def delete_by_source(self, source: str) -> int:
@@ -163,6 +170,7 @@ class VectorDB:
             "DELETE FROM documents WHERE json_extract(metadata, '$.source') = ?", (source,)
         )
         self.conn.commit()
+        self._cache = None
         return cur.rowcount
 
     def indexed_sources(self, root: str) -> Dict[str, int]:
@@ -187,6 +195,7 @@ class VectorDB:
             [(self._vec_to_blob(v), int(len(v)), doc_id) for doc_id, v in pairs],
         )
         self.conn.commit()
+        self._cache = None
 
     def categories(self) -> List[str]:
         rows = self.conn.execute(
@@ -198,6 +207,7 @@ class VectorDB:
     def clear(self) -> None:
         self.conn.execute("DELETE FROM documents")
         self.conn.commit()
+        self._cache = None
 
     # ------------------------------------------------------------------ #
     # Read operations
@@ -222,8 +232,17 @@ class VectorDB:
             for r in rows
         ]
 
+    def count_category(self, category: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM documents WHERE json_extract(metadata, '$.category') = ?",
+            (category,),
+        ).fetchone()
+        return int(row["n"])
+
     def _load_all_vectors(self):
-        """Return (ids, texts, metadata_list, matrix[N, dim])."""
+        """Return (ids, texts, metadata_list, matrix[N, dim]), cached until the next write."""
+        if self._cache is not None:
+            return self._cache
         rows = self.conn.execute(
             "SELECT doc_id, text, embedding, metadata FROM documents"
         ).fetchall()
@@ -234,7 +253,8 @@ class VectorDB:
             metas.append(json.loads(r["metadata"] or "{}"))
             vectors.append(self._blob_to_vec(r["embedding"]))
         matrix = np.vstack(vectors) if vectors else np.zeros((0, self.dim), dtype=np.float32)
-        return ids, texts, metas, matrix
+        self._cache = (ids, texts, metas, matrix)
+        return self._cache
 
     # ------------------------------------------------------------------ #
     # Similarity search
@@ -267,9 +287,12 @@ class VectorDB:
 
         scores = self._cosine_similarity(query_embedding, matrix)
 
-        order = np.argsort(-scores)  # highest score first
+        # Partial sort: only the top_k need ordering, which matters for large corpora.
+        k = min(top_k, len(scores))
+        top = np.argpartition(-scores, k - 1)[:k]
+        order = top[np.argsort(-scores[top])]  # highest score first
         results: List[SearchResult] = []
-        for idx in order[:top_k]:
+        for idx in order:
             score = float(scores[idx])
             if score < min_score:
                 continue

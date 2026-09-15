@@ -18,6 +18,12 @@ generation (RAG). No paid API keys, and your data never leaves your machine.
   - **Ollama** (e.g. `llama3.2`) writes a natural-language answer, streamed token by token.
   - Without Ollama, an **extractive** answer uses the same sentence-transformers model to pick
     the source sentences that best answer the question — zero setup.
+- **MS MARCO knowledge base** — import real web passages from Microsoft's
+  [MS MARCO](https://microsoft.github.io/msmarco/) dataset (real Bing questions + the passages
+  retrieved for them), so the database can answer general-knowledge questions out of the box.
+- **MS MARCO re-ranking** — the top 40 vector hits are re-scored by
+  `cross-encoder/ms-marco-MiniLM-L6-v2`, a model trained on MS MARCO that reads the query and
+  passage together — much more precise than vector similarity alone.
 - **Index any folder** — point it at a directory of notes, docs or code. Files are split into
   line-numbered chunks; re-indexing is incremental (only changed files are re-embedded).
 - **Modern web UI** — light/dark themes, streaming answers, score meters, highlighted
@@ -51,7 +57,11 @@ Open **http://127.0.0.1:8000**, click **☰ Data** → **Index folder** (or *Loa
 documents*), then search or ask a question. The pill in the top bar shows which answer
 backend is active; the app detects Ollama automatically (no restart needed).
 
+To add MS MARCO data, open **☰ Data → MS MARCO** and click **Import**, or run
+`python cli.py msmarco --limit 20000` (the 21 MB validation split is downloaded once and cached).
+
 Useful flags: `python app.py --folder C:\path\to\notes` indexes a folder at startup;
+`--msmarco 20000` imports MS MARCO passages at startup;
 `--port 9000`, `--db data/other.db`.
 Environment variables: `OLLAMA_MODEL` (default `llama3.2`, e.g. `qwen2.5:3b`, `mistral`,
 `phi3`) and `OLLAMA_URL` (default `http://127.0.0.1:11434`).
@@ -61,6 +71,8 @@ Environment variables: `OLLAMA_MODEL` (default `llama3.2`, e.g. `qwen2.5:3b`, `m
 ```bash
 python cli.py index                                   # index the current folder
 python cli.py search "how are similarity scores calculated" --top-k 3
+python cli.py msmarco --limit 20000                   # import MS MARCO web passages
+python cli.py search "what causes rainbows" --rerank  # re-rank with the MS MARCO cross-encoder
 python cli.py load-samples
 python cli.py add "Deep learning powers modern AI" --category technology
 python cli.py stats
@@ -87,10 +99,34 @@ python cli.py stats
         └───────────────────┘   └────────────────────┘   └─────────────────────┘
 ```
 
+### About MS MARCO
+
+[MS MARCO](https://microsoft.github.io/msmarco/) (Microsoft MAchine Reading COmprehension) is
+a large-scale dataset of ~1M anonymized Bing questions, each paired with the web passages a
+search engine retrieved for it and human judgements of which passage answers the question.
+It is the standard benchmark for training and evaluating semantic search models. This project
+uses it in two ways:
+
+| Use | What | Why |
+|-----|------|-----|
+| **Data** | v1.1 passages from [`microsoft/ms_marco`](https://huggingface.co/datasets/microsoft/ms_marco) (validation: 82k passages, train: 676k) | Gives the vector DB real-world content to search and answer from. Each passage keeps its URL, the Bing question and whether it was judged relevant. |
+| **Model** | `cross-encoder/ms-marco-MiniLM-L6-v2` re-ranker (≈90 MB) | A model already *trained on* MS MARCO. Training one from scratch needs a GPU and days of compute; using the published checkpoint gives the same benefit instantly. |
+
+> MS MARCO is released for non-commercial research purposes. The data is downloaded on demand
+> and is never committed to this repository.
+
+### How search works: retrieve, then re-rank
+
+1. **Retrieve** — the query is embedded (`all-MiniLM-L6-v2`) and compared to every stored vector
+   by cosine similarity; the top 40 candidates are kept. Vectors are cached in memory, so this
+   takes milliseconds even with tens of thousands of passages.
+2. **Re-rank** — the MS MARCO cross-encoder reads the query together with each candidate and
+   assigns a relevance probability; the best top-k are returned.
+
 ### How "Ask AI" works
 
 1. The question is embedded with the same model as the documents.
-2. SQLite returns the stored vectors; the top-k by cosine similarity become the **sources**.
+2. Retrieval and re-ranking (above) select the **sources**.
 3. The sources are sent to the UI immediately.
 4. **If Ollama is running** with the model pulled, the sources go to the local LLM inside
    `<source>` tags and its answer streams back over Server-Sent Events, citing sources by number.
@@ -128,6 +164,8 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- e.g. embeddin
 | `search_engine.py` | Facade combining embeddings, database and indexing |
 | `embedding.py` | Transformer embeddings + offline fallback |
 | `vector_db.py` | SQLite vector store + cosine similarity search |
+| `msmarco.py` | Downloads MS MARCO and imports passages (background job with progress) |
+| `reranker.py` | MS MARCO cross-encoder re-ranking |
 | `folder_indexer.py` | Walks a folder, chunks & embeds files incrementally |
 | `cli.py` | Command-line interface |
 | `sample_data.py` | Demo corpus and example queries |

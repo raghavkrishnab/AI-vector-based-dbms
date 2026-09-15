@@ -37,6 +37,13 @@ def main() -> None:
     p_index = sub.add_parser("index", help="Index text files in a folder (default: cwd)")
     p_index.add_argument("folder", nargs="?", default=".")
 
+    p_ms = sub.add_parser("msmarco", help="Import MS MARCO web passages")
+    p_ms.add_argument("--limit", type=int, default=20000)
+    p_ms.add_argument("--split", choices=["validation", "train"], default="validation")
+
+    p_search.add_argument("--rerank", action="store_true",
+                          help="Re-rank with the MS MARCO cross-encoder")
+
     sub.add_parser("load-samples", help="Load the sample corpus")
     sub.add_parser("stats", help="Show database stats")
     sub.add_parser("clear", help="Delete all documents")
@@ -51,7 +58,8 @@ def main() -> None:
 
     elif args.command == "search":
         out = engine.search(
-            args.query, top_k=args.top_k, min_score=args.min_score, category=args.category
+            args.query, top_k=args.top_k, min_score=args.min_score, category=args.category,
+            rerank=args.rerank,
         )
         print(f"\nQuery: {out['query']!r}")
         print(
@@ -60,15 +68,27 @@ def main() -> None:
         )
         if not out["results"]:
             print("  (no results)")
+        if out["reranked"]:
+            print(f"Re-ranked by MS MARCO cross-encoder in {out['rerank_ms']} ms\n")
         for rank, r in enumerate(out["results"], start=1):
             m = r.metadata
-            if "path" in m:
+            if r.rerank_score is not None:
+                print(f"  {rank}. [relevance {r.rerank_score:.3f} | cosine {r.score:.3f}] {m.get('url') or m.get('path') or ''}")
+                print(f"       {' '.join(r.text.split())[:160]}")
+            elif "path" in m:
                 print(f"  {rank}. [{r.score:.3f}] {m['path']}:{m['start_line']}-{m['end_line']}")
                 snippet = " ".join(r.text.split())
                 print(f"       {snippet[:160]}{'...' if len(snippet) > 160 else ''}")
             else:
                 print(f"  {rank}. [{r.score:.3f}] ({m.get('category', '-')}) {r.text}")
         print()
+
+    elif args.command == "msmarco":
+        from msmarco import import_msmarco
+
+        prog = import_msmarco(engine, split=args.split, limit=args.limit,
+                              on_progress=lambda p: print(f"  {p.message}".ljust(60), end="\r"))
+        print(f"\n{prog.message}. Total docs: {engine.count()}")
 
     elif args.command == "index":
         rep = engine.index_folder(args.folder)

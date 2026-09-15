@@ -76,6 +76,8 @@ def source_label(r: SearchResult) -> str:
     m = r.metadata
     if "path" in m:
         return f"{m['path']} (lines {m['start_line']}-{m['end_line']})"
+    if m.get("category") == "msmarco":
+        return f"MS MARCO web passage from {m.get('url', 'unknown source')}"
     return f"document {r.doc_id}" + (f" [{m['category']}]" if m.get("category") else "")
 
 

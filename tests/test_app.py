@@ -15,9 +15,25 @@ from embedding import EmbeddingService  # noqa: E402
 from search_engine import SearchEngine  # noqa: E402
 
 
+class KeywordReranker:
+    """Offline stand-in for the MS MARCO cross-encoder: scores by shared words."""
+    model_name = "fake-reranker"
+    status = "ready"
+
+    def load(self):
+        return True
+
+    def rerank(self, query, results, top_k):
+        words = set(query.lower().split())
+        for r in results:
+            r.rerank_score = len(words & set(r.text.lower().split())) / (len(words) or 1)
+        return sorted(results, key=lambda r: r.rerank_score, reverse=True)[:top_k]
+
+
 @pytest.fixture
 def engine(tmp_path):
-    eng = SearchEngine(db_path=str(tmp_path / "v.db"), embedder=EmbeddingService(prefer_transformer=False))
+    eng = SearchEngine(db_path=str(tmp_path / "v.db"), embedder=EmbeddingService(prefer_transformer=False),
+                       reranker=KeywordReranker())
     yield eng
     eng.db.close()
 
