@@ -67,6 +67,11 @@ def create_app(engine: SearchEngine) -> FastAPI:
     def index():
         return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
+    @app.get("/api/ai")
+    def ai_status():
+        """Lightweight answer-backend status, polled by the UI."""
+        return rag.backend_info(engine.embedder)
+
     @app.get("/api/stats")
     def stats():
         with engine.lock:

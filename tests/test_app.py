@@ -104,11 +104,20 @@ def _events(client, query):
 def test_extractive_answer_without_ollama(client, monkeypatch):
     monkeypatch.setattr(rag, "ollama_status", lambda: {"running": False, "model_ready": False, "models": []})
     client.post("/api/samples")
-    assert client.get("/api/stats").json()["ai"]["backend"] == "extractive"
+    ai = client.get("/api/ai").json()
+    assert ai["backend"] == "extractive" and ai["label"] == "Ollama offline"
     events = _events(client, "which sport is played on weekends with friends")
+    notice = next(e for e in events if e["type"] == "notice")
+    assert "Can't reach Ollama" in notice["message"]
     assert events[-1]["type"] == "done" and events[-1]["model"].startswith("extractive")
     answer = "".join(e["text"] for e in events if e["type"] == "delta")
     assert "basketball" in answer.lower() and "[" in answer
+
+
+def test_missing_model_is_reported(client, monkeypatch):
+    monkeypatch.setattr(rag, "ollama_status", lambda: {"running": True, "model_ready": False, "models": ["mistral:latest"]})
+    ai = client.get("/api/ai").json()
+    assert ai["label"].endswith("missing") and "ollama pull" in ai["note"] and "mistral" in ai["note"]
 
 
 def test_ollama_answer_is_streamed(client, monkeypatch):

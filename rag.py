@@ -43,12 +43,15 @@ _status_cache: Dict = {"at": 0.0, "value": None}
 
 
 def ollama_status() -> Dict:
-    """Is Ollama reachable, and is the configured model pulled? Cached for 10 s."""
-    if _status_cache["value"] is not None and time.time() - _status_cache["at"] < 10:
-        return _status_cache["value"]
+    """Is Ollama reachable, and is the configured model pulled?
+    A healthy result is cached for 10 s; a failure only for 2 s, so Ollama
+    starting up (or recovering) is picked up almost immediately."""
+    cached = _status_cache["value"]
+    if cached is not None and time.time() - _status_cache["at"] < (10 if cached["model_ready"] else 2):
+        return cached
     status = {"running": False, "model_ready": False, "models": []}
     try:
-        res = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=0.8)
+        res = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=3.0)
         res.raise_for_status()
         names = [m["name"] for m in res.json().get("models", [])]
         status = {
@@ -67,9 +70,13 @@ def backend_info(embedder) -> Dict:
     st = ollama_status()
     if st["model_ready"]:
         return {"backend": "ollama", "label": f"Ollama · {OLLAMA_MODEL}", "generative": True}
-    note = (f"Ollama is running but '{OLLAMA_MODEL}' is not pulled — run: ollama pull {OLLAMA_MODEL}"
-            if st["running"] else "Install Ollama and run `ollama pull llama3.2` for generated answers")
-    return {"backend": "extractive", "label": "Extractive · local embeddings", "generative": False, "note": note}
+    if st["running"]:
+        return {"backend": "extractive", "label": f"Model {OLLAMA_MODEL} missing", "generative": False,
+                "note": f"Ollama is running but '{OLLAMA_MODEL}' is not downloaded. Run: ollama pull {OLLAMA_MODEL} "
+                        f"(installed: {', '.join(st['models']) or 'none'}). Until then answers quote your sources."}
+    return {"backend": "extractive", "label": "Ollama offline", "generative": False,
+            "note": f"Can't reach Ollama at {OLLAMA_URL}. Start the Ollama app (or run `ollama serve`). "
+                    "Until then answers quote the most relevant sentences from your sources instead of being written by AI."}
 
 
 def source_label(r: SearchResult) -> str:
@@ -202,7 +209,9 @@ async def stream_answer(question: str, results: List[SearchResult], embedder) ->
             if sent_any:
                 yield {"type": "error", "message": f"Ollama stopped mid-answer: {exc}"}
                 return
-            yield {"type": "notice", "message": f"Ollama unavailable ({exc}); using extractive answer."}
+            yield {"type": "notice", "message": f"Ollama failed ({exc}), so this answer quotes your sources instead."}
+    else:
+        yield {"type": "notice", "message": backend_info(embedder).get("note", "")}
 
     async for event in _stream_extractive(question, results, embedder):
         yield event

@@ -116,6 +116,7 @@ body.has-results .examples { display: none; }
 .answer::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
 .answer-head { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; }
 .answer-head .model { margin-left: auto; font-weight: 400; color: var(--faint); font-size: 12.5px; }
+.notice-box { font-size: 13px; color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; }
 .answer-body { overflow-wrap: anywhere; }
 .answer-body p { margin: 0 0 10px; }
 .answer-body ul, .answer-body ol { margin: 0 0 10px; padding-left: 22px; }
@@ -415,6 +416,16 @@ function renderMarkdown(src) {
   return out.join("").replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${esc(blocks[+i])}</code>`);
 }
 
+// ---------- AI status pill (kept live: Ollama may start or stop after the page loads) ----------
+function renderAiPill(ai) {
+  $("#pill-ai").innerHTML = `<span class="dot ${ai.generative ? "on" : "warn"}"></span><span>${esc(ai.label)}</span>`;
+  $("#pill-ai").title = ai.generative ? "Answers are written by your local Ollama model" : ai.note;
+}
+async function refreshAi() {
+  try { renderAiPill(await api("/api/ai")); } catch {}
+}
+setInterval(() => { if (!document.hidden) refreshAi(); }, 10000);
+
 // ---------- stats / header ----------
 async function loadStats() {
   const s = state.stats = await api("/api/stats");
@@ -425,8 +436,7 @@ async function loadStats() {
   $("#ms-count").textContent = s.msmarco.passages.toLocaleString();
   $("#rerank-label").title = `Re-rank the top candidates with ${s.reranker.model} (${s.reranker.status})`;
   if (["downloading", "embedding"].includes(s.msmarco.import.state)) pollImport();
-  $("#pill-ai").innerHTML = `<span class="dot ${s.ai.generative ? "on" : "warn"}"></span><span>${esc(s.ai.label)}</span>`;
-  $("#pill-ai").title = s.ai.generative ? "Generated answers from your local Ollama model" : s.ai.note;
+  renderAiPill(s.ai);
   const sel = $("#category"), cur = sel.value;
   sel.innerHTML = '<option value="">All</option>' + s.categories.map(c => `<option ${c === cur ? "selected" : ""}>${esc(c)}</option>`).join("");
   if (!$("#folder").value) $("#folder").value = s.cwd;
@@ -535,7 +545,8 @@ async function run() {
     }
 
     output.innerHTML = `
-      <div class="card answer"><div class="answer-head">✦ AI answer <span class="model"></span></div>
+      <div class="card answer"><div class="answer-head"><span class="answer-title">✦ AI answer</span> <span class="model"></span></div>
+        <div class="notice-box" hidden></div>
         <div class="answer-body"><div class="thinking"><span class="spinner"></span>Retrieving relevant sources…</div></div></div>
       <div class="sources"></div>`;
     const answerBody = $(".answer-body", output);
@@ -562,7 +573,11 @@ async function run() {
           if (ev.results.length) renderResults($(".results", output), ev.results, query);
           answerBody.innerHTML = `<div class="thinking"><span class="spinner"></span>Reading ${ev.results.length} sources…</div>`;
         } else if (ev.type === "notice") {
-          toast(ev.message);
+          // Fallback: say plainly that this answer is quoted, not written by the AI model.
+          $(".answer-title", output).textContent = "❝ Quoted from your sources";
+          const box = $(".notice-box", output);
+          box.textContent = ev.message; box.hidden = !ev.message;
+          refreshAi();
         } else if (ev.type === "delta") {
           text += ev.text;
           if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; paint(false); }); }
