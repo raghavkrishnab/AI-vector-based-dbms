@@ -1,0 +1,38 @@
+# Render blueprint: https://render.com/docs/blueprint-spec
+# Deploy with: Render dashboard -> New -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: vector-search-db
+    runtime: python
+    plan: free              # 512 MB RAM, 0.1 CPU, sleeps after 15 min idle
+    region: oregon
+    buildCommand: "pip install -r requirements-deploy.txt && python build_data.py"
+    startCommand: "uvicorn server:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /api/stats
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: EMBEDDING_BACKEND
+        value: fastembed    # ONNX models: no PyTorch on the server
+      - key: MSMARCO_PASSAGES
+        value: "5000"       # passages embedded during the build
+      - key: RERANK_BACKEND
+        value: fastembed
+      - key: RERANK_DEFAULT
+        value: "false"      # 0.1 CPU: re-ranking works but is slow, so opt-in via the UI toggle
+      - key: RERANK_CANDIDATES
+        value: "20"         # fewer candidates to re-score on a slow instance
+      - key: RERANK_BATCH
+        value: "4"          # small batches keep peak memory ~200 MB instead of ~800 MB
+      - key: ONNX_THREADS
+        value: "1"
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: HF_HOME
+        value: /opt/render/project/.cache/huggingface
+      - key: LLM_API_KEY
+        sync: false         # set in the Render dashboard (free Groq key)
+      - key: LLM_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_MODEL
+        value: llama-3.1-8b-instant

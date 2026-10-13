@@ -154,6 +154,49 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- e.g. embeddin
 
 ---
 
+## Deploying to Render (free tier)
+
+The repo ships a [`render.yaml`](render.yaml) blueprint. In the Render dashboard choose
+**New → Blueprint**, pick this repository, and Render will:
+
+1. install [`requirements-deploy.txt`](requirements-deploy.txt) — no PyTorch;
+2. run [`build_data.py`](build_data.py), which embeds `MSMARCO_PASSAGES` passages (5,000 by
+   default) into `data/vectors.db` and pre-downloads the re-ranker;
+3. start `uvicorn server:app`.
+
+### Why the server runs different models
+
+A free instance has 512 MB RAM and 0.1 CPU, and PyTorch alone does not fit. The server
+therefore loads the *same two models* through ONNX runtime (`fastembed`) instead:
+
+| | Local | Render |
+|---|---|---|
+| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` | same model, ONNX — **identical vectors** |
+| Re-ranking | `cross-encoder/ms-marco-MiniLM-L6-v2` | `Xenova/ms-marco-MiniLM-L-6-v2` (same model, ONNX) |
+| Answers | Ollama (local LLM) | hosted OpenAI-compatible API (`LLM_API_KEY`) |
+| Memory | ~800 MB | ~210 MB idle, ~350 MB with re-ranking |
+
+Because the vectors are identical, a database built by either backend works with the other.
+
+### AI answers on the server
+
+Ollama needs several GB of RAM, so it cannot run on a small instance. Set `LLM_API_KEY` in the
+Render dashboard to a free key from [Groq](https://console.groq.com) (default) or any
+OpenAI-compatible provider via `LLM_BASE_URL` / `LLM_MODEL`. Without a key the deployed app
+still works and answers by quoting the best-matching sentences from the sources.
+
+### Free-tier limits to expect
+
+- The service **sleeps after 15 minutes** of inactivity; the next request takes ~1 minute.
+- There is **no persistent disk**: documents added through the UI are lost on restart, and the
+  database is rebuilt from `build_data.py` on each deploy.
+- Re-ranking works but is slow on 0.1 CPU, so `RERANK_DEFAULT` is `false` — the UI toggle
+  still turns it on per search.
+- Want the full 20,000 passages, always-on and fast re-ranking? Raise `MSMARCO_PASSAGES` and
+  move to a paid instance (Starter 512 MB / Standard 2 GB) with a persistent disk.
+
+---
+
 ## Project structure
 
 | File | Purpose |
@@ -164,6 +207,9 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- e.g. embeddin
 | `search_engine.py` | Facade combining embeddings, database and indexing |
 | `embedding.py` | Transformer embeddings + offline fallback |
 | `vector_db.py` | SQLite vector store + cosine similarity search |
+| `server.py` | ASGI entrypoint used in deployment |
+| `build_data.py` | Builds the database at deploy time |
+| `render.yaml` | Render blueprint (free tier) |
 | `msmarco.py` | Downloads MS MARCO and imports passages (background job with progress) |
 | `reranker.py` | MS MARCO cross-encoder re-ranking |
 | `folder_indexer.py` | Walks a folder, chunks & embeds files incrementally |

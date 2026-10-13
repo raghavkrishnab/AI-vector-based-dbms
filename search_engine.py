@@ -10,6 +10,7 @@ share one SQLite connection safely.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -21,7 +22,7 @@ from vector_db import SearchResult, VectorDB
 
 # With re-ranking on, vector search fetches this many candidates (at least) for
 # the cross-encoder to re-score.
-RERANK_CANDIDATES = 30
+RERANK_CANDIDATES = int(os.environ.get("RERANK_CANDIDATES", "30"))
 
 
 def _norm_text(text: str) -> str:
@@ -57,13 +58,20 @@ class SearchEngine:
     def backend(self) -> str:
         return self.embedder.backend
 
+    @staticmethod
+    def _model_id(backend: str) -> str:
+        """Compare backends by model only: 'sentence-transformers:all-MiniLM-L6-v2'
+        and 'fastembed:all-MiniLM-L6-v2' are the same model and give the same
+        vectors, so switching between them must not trigger a re-embed."""
+        return backend.split(":")[-1]
+
     def _sync_embedding_backend(self) -> int:
         """Vectors from different models are not comparable. If the stored
-        vectors came from another embedder, re-embed every document from its
+        vectors came from another model, re-embed every document from its
         stored text. Returns the number of documents re-embedded."""
         stored = self.db.get_meta("embedding_backend")
         count = 0
-        if stored is not None and stored != self.backend:
+        if stored is not None and self._model_id(stored) != self._model_id(self.backend):
             docs = self.db.all_texts()
             for start in range(0, len(docs), 256):
                 batch = docs[start:start + 256]

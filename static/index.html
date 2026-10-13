@@ -435,6 +435,7 @@ async function loadStats() {
   $("#pill-docs").title = `${s.msmarco.passages.toLocaleString()} MS MARCO passages`;
   $("#ms-count").textContent = s.msmarco.passages.toLocaleString();
   $("#rerank-label").title = `Re-rank the top candidates with ${s.reranker.model} (${s.reranker.status})`;
+  if (!state.rerankTouched) $("#rerank").checked = s.reranker.default;
   if (["downloading", "embedding"].includes(s.msmarco.import.state)) pollImport();
   renderAiPill(s.ai);
   const sel = $("#category"), cur = sel.value;
@@ -465,6 +466,7 @@ $$(".segmented button").forEach(b => b.onclick = () => {
 setMode("ask");
 
 // ---------- search / ask ----------
+$("#rerank").addEventListener("change", () => { state.rerankTouched = true; });
 $("#search-form").onsubmit = e => { e.preventDefault(); run(); };
 document.addEventListener("keydown", e => {
   if (e.key === "/" && document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "TEXTAREA") { e.preventDefault(); $("#q").focus(); }

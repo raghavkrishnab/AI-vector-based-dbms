@@ -52,41 +52,46 @@ def download_split(split: str) -> str:
 
 def iter_passages(parquet_path: str, limit: int) -> Iterator[Dict]:
     """Yield up to `limit` unique passages as {doc_id, text, metadata}."""
-    import pandas as pd
+    import pyarrow.parquet as pq
 
-    df = pd.read_parquet(parquet_path, columns=["query", "query_id", "query_type", "passages"])
+    table = pq.read_table(parquet_path, columns=["query", "query_type", "passages"])
     seen = set()
-    for row in df.itertuples(index=False):
-        p = row.passages
-        for text, url, selected in zip(p["passage_text"], p["url"], p["is_selected"]):
-            text = str(text).strip()
-            digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
-            if len(text) < 30 or digest in seen:
-                continue
-            seen.add(digest)
-            yield {
-                "doc_id": f"msmarco-{digest}",   # stable id: re-importing never duplicates
-                "text": text,
-                "metadata": {
-                    "category": CATEGORY,
-                    "url": str(url),
-                    "query": str(row.query),        # the Bing question this passage was retrieved for
-                    "query_type": str(row.query_type),
-                    "selected": bool(selected),     # human-judged as answering that question
-                },
-            }
-            if len(seen) >= limit:
-                return
+    for batch in table.to_batches(max_chunksize=512):
+        rows = batch.to_pylist()
+        for row in rows:
+            p = row["passages"]
+            for text, url, selected in zip(p["passage_text"], p["url"], p["is_selected"]):
+                text = str(text).strip()
+                digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+                if len(text) < 30 or digest in seen:
+                    continue
+                seen.add(digest)
+                yield {
+                    "doc_id": f"msmarco-{digest}",   # stable id: re-importing never duplicates
+                    "text": text,
+                    "metadata": {
+                        "category": CATEGORY,
+                        "url": str(url),
+                        "query": str(row["query"]),      # the Bing question this passage was retrieved for
+                        "query_type": str(row["query_type"]),
+                        "selected": bool(selected),      # human-judged as answering that question
+                    },
+                }
+                if len(seen) >= limit:
+                    return
 
 
 def sample_queries(parquet_path: str, n: int = 4) -> List[str]:
     """A few short, readable questions from the split, for the UI's example chips."""
-    import pandas as pd
+    import random
 
-    df = pd.read_parquet(parquet_path, columns=["query", "query_type"])
-    picks = df[df["query_type"].isin(["description", "entity"])]["query"]
-    picks = picks[picks.str.len().between(18, 45)]
-    return picks.sample(n=min(n, len(picks)), random_state=7).str.capitalize().tolist()
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(parquet_path, columns=["query", "query_type"]).to_pylist()
+    picks = [r["query"] for r in table
+             if r["query_type"] in ("description", "entity") and 18 <= len(r["query"]) <= 45]
+    random.Random(7).shuffle(picks)
+    return [q.capitalize() for q in picks[:n]]
 
 
 def import_msmarco(engine, split: str = "validation", limit: int = 20000, batch_size: int = 256,

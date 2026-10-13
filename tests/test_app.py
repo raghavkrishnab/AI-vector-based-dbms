@@ -159,3 +159,34 @@ def test_backend_change_reembeds(tmp_path):
     eng2 = SearchEngine(db_path=path, embedder=EmbeddingService(prefer_transformer=False))
     assert eng2.reembedded == 1
     eng2.db.close()
+
+
+def test_hosted_api_backend_streams(engine, monkeypatch):
+    """The deployed app answers through an OpenAI-compatible API (Groq by default)."""
+    import httpx
+
+    monkeypatch.setattr(rag, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(rag, "ollama_status", lambda: {"running": False, "model_ready": False, "models": []})
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization")
+        seen["url"] = str(request.url)
+        body = ('data: {"choices":[{"delta":{"content":"Paris"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":" [1]"}}]}\n\n'
+                'data: [DONE]\n\n')
+        return httpx.Response(200, text=body)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(rag.httpx, "AsyncClient",
+                        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
+
+    engine.add("Paris is the capital of France")
+    client = TestClient(create_app(engine))
+    with client.stream("POST", "/api/ask", json={"query": "capital of france"}) as res:
+        events = [json.loads(line[6:]) for line in res.iter_lines() if line.startswith("data: ")]
+
+    assert "".join(e["text"] for e in events if e["type"] == "delta") == "Paris [1]"
+    assert events[-1]["type"] == "done" and events[-1]["model"] == rag.LLM_MODEL
+    assert seen["auth"] == "Bearer test-key" and seen["url"].endswith("/chat/completions")
+    assert client.get("/api/ai").json()["generative"] is True

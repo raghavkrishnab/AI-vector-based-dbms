@@ -29,6 +29,8 @@ from sample_data import EXAMPLE_QUERIES, SAMPLE_DOCS
 from search_engine import SearchEngine
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+# Re-ranking is accurate but CPU-heavy; small cloud instances default it off.
+RERANK_DEFAULT = os.environ.get("RERANK_DEFAULT", "true").lower() in ("1", "true", "yes")
 
 
 class SearchRequest(BaseModel):
@@ -84,7 +86,8 @@ def create_app(engine: SearchEngine) -> FastAPI:
             "backend": engine.backend,
             "dim": engine.embedder.dim,
             "semantic": engine.backend != "hashing-fallback",
-            "reranker": {"model": engine.reranker.model_name, "status": engine.reranker.status},
+            "reranker": {"model": engine.reranker.model_name, "status": engine.reranker.status,
+                         "default": RERANK_DEFAULT},
             "msmarco": {"passages": msmarco_count, "import": import_progress.__dict__},
             "ai": rag.backend_info(engine.embedder),
             "cwd": os.getcwd(),

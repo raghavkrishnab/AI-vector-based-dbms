@@ -1,0 +1,10 @@
+# Server dependencies for Render (no PyTorch: it does not fit a 512 MB instance).
+# Embeddings and re-ranking run through ONNX runtime via fastembed, which
+# produces the same vectors as the sentence-transformers models used locally.
+numpy>=1.24
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+fastembed>=0.4
+pyarrow>=14
+huggingface_hub>=0.20

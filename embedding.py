@@ -6,10 +6,14 @@ Embedding service for the Vector Search Database.
 Turns text into a fixed-length numeric vector (an "embedding") so that pieces of
 text with similar *meaning* end up close together in vector space.
 
-Primary model:  sentence-transformers  ->  all-MiniLM-L6-v2  (384 dimensions)
-Fallback model: a lightweight, dependency-free hashing embedder that runs fully
-                offline. It is used automatically if sentence-transformers (or
-                its model download) is unavailable, so the demo ALWAYS runs.
+Backends, tried in order:
+  1. sentence-transformers -> all-MiniLM-L6-v2 (384 dimensions), used locally.
+  2. fastembed -> the same model as ONNX. No PyTorch, ~10x smaller install and
+     a fraction of the memory, so it fits small cloud instances (Render free
+     tier). Produces the same vectors, so a database built with either backend
+     works with the other.
+  3. a dependency-free hashing embedder that runs fully offline, so the app
+     ALWAYS runs.
 
 The fallback is not as smart as the real transformer, but it keeps the app
 functional on machines with no internet access or without the heavy ML deps.
@@ -18,7 +22,7 @@ functional on machines with no internet access or without the heavy ML deps.
 from __future__ import annotations
 
 import hashlib
-import math
+import os
 import re
 from typing import List
 
@@ -36,10 +40,17 @@ class EmbeddingService:
         self.model_name = model_name
         self.dim = EMBEDDING_DIM
         self._model = None
+        self._kind = "hashing"
         self.backend = "hashing-fallback"
 
         if prefer_transformer:
-            self._try_load_transformer()
+            # EMBEDDING_BACKEND=fastembed forces the ONNX backend (used in deployment).
+            if os.environ.get("EMBEDDING_BACKEND") == "fastembed":
+                self._try_load_fastembed()
+            else:
+                self._try_load_transformer()
+                if self._model is None:
+                    self._try_load_fastembed()
 
     # ------------------------------------------------------------------ #
     # Model loading
@@ -58,9 +69,27 @@ class EmbeddingService:
             get_dim = getattr(self._model, "get_embedding_dimension", None) \
                 or self._model.get_sentence_embedding_dimension
             self.dim = get_dim()
+            self._kind = "sentence-transformers"
             self.backend = f"sentence-transformers:{self.model_name}"
         except Exception:
             self._model = None
+            self._kind = "hashing"
+            self.backend = "hashing-fallback"
+
+    def _try_load_fastembed(self) -> None:
+        """The same model through ONNX runtime: no PyTorch, a fraction of the
+        memory and install size, and numerically identical vectors — so a
+        database built with either backend works with the other."""
+        try:
+            from fastembed import TextEmbedding  # type: ignore
+
+            name = self.model_name if "/" in self.model_name else f"sentence-transformers/{self.model_name}"
+            self._model = TextEmbedding(name)
+            self._kind = "fastembed"
+            self.backend = f"fastembed:{name.split('/')[-1]}"
+        except Exception:
+            self._model = None
+            self._kind = "hashing"
             self.backend = "hashing-fallback"
 
     # ------------------------------------------------------------------ #
@@ -71,9 +100,14 @@ class EmbeddingService:
         if isinstance(texts, str):
             texts = [texts]
 
-        if self._model is not None:
+        if self._kind == "sentence-transformers":
             vecs = self._model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
             return vecs.astype(np.float32)
+
+        if self._kind == "fastembed":
+            vecs = np.asarray(list(self._model.embed(texts)), dtype=np.float32)
+            norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+            return vecs / np.maximum(norms, 1e-12)
 
         vecs = np.vstack([self._hash_embed(t) for t in texts])
         return vecs.astype(np.float32)

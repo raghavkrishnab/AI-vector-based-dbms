@@ -12,7 +12,14 @@ answers from them, citing sources as [1], [2], ...
    Configure with OLLAMA_URL (default http://127.0.0.1:11434) and
    OLLAMA_MODEL (default llama3.2).
 
-2. Extractive (fallback, no setup) — uses the sentence-transformers embedding
+2. A hosted OpenAI-compatible API (used when Ollama isn't available and
+   LLM_API_KEY is set). Defaults to Groq's free tier; OpenRouter and anything
+   else OpenAI-compatible work by setting LLM_BASE_URL. This is what the
+   deployed app on Render uses, since Ollama needs far more memory than a
+   small cloud instance has.
+       LLM_API_KEY, LLM_BASE_URL (default Groq), LLM_MODEL
+
+3. Extractive (fallback, no setup) — uses the sentence-transformers embedding
    model already loaded for search to pick the source sentences that best
    answer the question. Always available, fully offline.
 """
@@ -33,6 +40,10 @@ from vector_db import SearchResult
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
+
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
+LLM_MODEL = os.environ.get("LLM_MODEL", "llama-3.1-8b-instant")
 
 SYSTEM_PROMPT = """You answer questions using only the numbered sources retrieved \
 from the user's vector database. Cite the sources you rely on inline as [1], [2], etc. \
@@ -70,13 +81,17 @@ def backend_info(embedder) -> Dict:
     st = ollama_status()
     if st["model_ready"]:
         return {"backend": "ollama", "label": f"Ollama · {OLLAMA_MODEL}", "generative": True}
+    if LLM_API_KEY:
+        host = LLM_BASE_URL.split("//")[-1].split("/")[0].replace("api.", "")
+        return {"backend": "hosted", "label": f"{host} · {LLM_MODEL}", "generative": True}
     if st["running"]:
         return {"backend": "extractive", "label": f"Model {OLLAMA_MODEL} missing", "generative": False,
                 "note": f"Ollama is running but '{OLLAMA_MODEL}' is not downloaded. Run: ollama pull {OLLAMA_MODEL} "
                         f"(installed: {', '.join(st['models']) or 'none'}). Until then answers quote your sources."}
     return {"backend": "extractive", "label": "Ollama offline", "generative": False,
-            "note": f"Can't reach Ollama at {OLLAMA_URL}. Start the Ollama app (or run `ollama serve`). "
-                    "Until then answers quote the most relevant sentences from your sources instead of being written by AI."}
+            "note": f"Can't reach Ollama at {OLLAMA_URL}. Start the Ollama app (or run `ollama serve`), "
+                    f"or set LLM_API_KEY to use a hosted model. Until then answers quote the most relevant "
+                    "sentences from your sources instead of being written by AI."}
 
 
 def source_label(r: SearchResult) -> str:
@@ -136,7 +151,40 @@ async def _stream_ollama(question: str, results: List[SearchResult]) -> AsyncIte
 
 
 # --------------------------------------------------------------------------- #
-# Backend 2: extractive answer with the local embedding model
+# Backend 2: hosted OpenAI-compatible API (Groq free tier by default)
+# --------------------------------------------------------------------------- #
+async def _stream_hosted(question: str, results: List[SearchResult]) -> AsyncIterator[Dict]:
+    payload = {
+        "model": LLM_MODEL,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_user_message(question, results)},
+        ],
+    }
+    headers = {"Authorization": f"Bearer {LLM_API_KEY}"}
+    timeout = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=5.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream("POST", f"{LLM_BASE_URL}/chat/completions",
+                                 json=payload, headers=headers) as res:
+            if res.status_code != 200:
+                body = (await res.aread()).decode(errors="replace")
+                raise RuntimeError(f"{res.status_code}: {body[:300]}")
+            async for line in res.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
+                chunk = json.loads(data)
+                delta = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content")
+                if delta:
+                    yield {"type": "delta", "text": delta}
+    yield {"type": "done", "model": LLM_MODEL}
+
+
+# --------------------------------------------------------------------------- #
+# Backend 3: extractive answer with the local embedding model
 # --------------------------------------------------------------------------- #
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n\s*\n|\n(?=\s*(?:[-*#>]|\d+[.)])\s)")
 
@@ -196,21 +244,31 @@ async def _stream_extractive(question: str, results: List[SearchResult], embedde
 # Entry point
 # --------------------------------------------------------------------------- #
 async def stream_answer(question: str, results: List[SearchResult], embedder) -> AsyncIterator[Dict]:
-    """Yield {"type": "delta", "text"} events, then "done" (or "error")."""
+    """Yield {"type": "delta", "text"} events, then "done" (or "error").
+
+    Order of preference: local Ollama, then a hosted OpenAI-compatible API,
+    then the extractive answer that always works."""
+    generators = []
     if (await run_in_threadpool(ollama_status))["model_ready"]:
+        generators.append(("Ollama", _stream_ollama(question, results)))
+    if LLM_API_KEY:
+        generators.append((LLM_MODEL, _stream_hosted(question, results)))
+
+    for name, generator in generators:
         sent_any = False
         try:
-            async for event in _stream_ollama(question, results):
+            async for event in generator:
                 sent_any = sent_any or event["type"] == "delta"
                 yield event
             return
         except (httpx.HTTPError, RuntimeError, ValueError) as exc:
-            _status_cache["value"] = None  # re-check next time
+            _status_cache["value"] = None  # re-check the backend next time
             if sent_any:
-                yield {"type": "error", "message": f"Ollama stopped mid-answer: {exc}"}
+                yield {"type": "error", "message": f"{name} stopped mid-answer: {exc}"}
                 return
-            yield {"type": "notice", "message": f"Ollama failed ({exc}), so this answer quotes your sources instead."}
-    else:
+            yield {"type": "notice", "message": f"{name} failed ({exc}); falling back."}
+
+    if not generators:
         yield {"type": "notice", "message": backend_info(embedder).get("note", "")}
 
     async for event in _stream_extractive(question, results, embedder):
