@@ -238,3 +238,6 @@ Exact search is ideal up to tens of thousands of chunks. For larger corpora:
 - **PostgreSQL + `pgvector`** — vector similarity as a native SQL operator.
 - **Hybrid search** — combine BM25 keyword scores with vector scores.
 - **Multilingual model** — swap in `multilingual-e5` for cross-language search.
+
+## Project deployment Link - onrender
+- **Link** - https://vector-search-db-f2md.onrender.com
