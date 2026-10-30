@@ -82,6 +82,10 @@ python cli.py stats
 
 ## Architecture
 
+For the full picture — component diagram, request lifecycle, data model, module map, API
+reference and measured performance — see **[ARCHITECTURE.md](ARCHITECTURE.md)**. The short
+version:
+
 ```
                  ┌──────────────────────────┐
   Browser  ────► │ app.py  (FastAPI)        │  /api/search  /api/ask (SSE)  /api/index ...
