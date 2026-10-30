@@ -190,3 +190,45 @@ def test_hosted_api_backend_streams(engine, monkeypatch):
     assert events[-1]["type"] == "done" and events[-1]["model"] == rag.LLM_MODEL
     assert seen["auth"] == "Bearer test-key" and seen["url"].endswith("/chat/completions")
     assert client.get("/api/ai").json()["generative"] is True
+
+
+def test_hosted_api_recovers_from_retired_model(engine, monkeypatch):
+    """Providers retire model ids; the app should find a current one and retry."""
+    import httpx
+
+    monkeypatch.setattr(rag, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(rag, "LLM_MODEL", "llama-3.1-8b-instant")   # retired upstream
+    monkeypatch.setattr(rag, "_resolved_model", None)
+    monkeypatch.setattr(rag, "ollama_status", lambda: {"running": False, "model_ready": False, "models": []})
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            calls.append("models")
+            return httpx.Response(200, json={"data": [
+                {"id": "whisper-large-v3"},          # not a chat model
+                {"id": "llama-3.3-70b-versatile"},
+                {"id": "llama-3.5-8b-instant"},      # preferred: small and instruction-tuned
+            ]})
+        model = json.loads(request.content)["model"]
+        calls.append(model)
+        if model == "llama-3.1-8b-instant":
+            return httpx.Response(404, json={"error": {"code": "model_not_found"}})
+        return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"Paris [1]"}}]}\n\n'
+                                        'data: [DONE]\n\n')
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(rag.httpx, "AsyncClient",
+                        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
+
+    engine.add("Paris is the capital of France")
+    client = TestClient(create_app(engine))
+    with client.stream("POST", "/api/ask", json={"query": "capital of france"}) as res:
+        events = [json.loads(line[6:]) for line in res.iter_lines() if line.startswith("data: ")]
+
+    assert calls == ["llama-3.1-8b-instant", "models", "llama-3.5-8b-instant"]
+    assert "".join(e["text"] for e in events if e["type"] == "delta") == "Paris [1]"
+    assert events[-1]["model"] == "llama-3.5-8b-instant"
+    # The working model sticks, so the next request does not rediscover it.
+    assert rag.active_model() == "llama-3.5-8b-instant"
+    assert client.get("/api/ai").json()["label"].endswith("llama-3.5-8b-instant")

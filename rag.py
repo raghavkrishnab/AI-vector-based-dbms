@@ -83,7 +83,7 @@ def backend_info(embedder) -> Dict:
         return {"backend": "ollama", "label": f"Ollama · {OLLAMA_MODEL}", "generative": True}
     if LLM_API_KEY:
         host = LLM_BASE_URL.split("//")[-1].split("/")[0].replace("api.", "")
-        return {"backend": "hosted", "label": f"{host} · {LLM_MODEL}", "generative": True}
+        return {"backend": "hosted", "label": f"{host} · {active_model()}", "generative": True}
     if st["running"]:
         return {"backend": "extractive", "label": f"Model {OLLAMA_MODEL} missing", "generative": False,
                 "note": f"Ollama is running but '{OLLAMA_MODEL}' is not downloaded. Run: ollama pull {OLLAMA_MODEL} "
@@ -153,34 +153,77 @@ async def _stream_ollama(question: str, results: List[SearchResult]) -> AsyncIte
 # --------------------------------------------------------------------------- #
 # Backend 2: hosted OpenAI-compatible API (Groq free tier by default)
 # --------------------------------------------------------------------------- #
+# Providers retire model ids without warning, so a hardcoded default eventually
+# 404s. When that happens we ask the provider what it serves today and keep
+# using the first usable chat model.
+_resolved_model: Optional[str] = None
+
+# Preferred when several models are offered: small instruction-tuned chat models
+# are fast and usually free-tier friendly.
+_MODEL_PREFERENCE = ("instant", "8b", "mini", "flash", "llama", "qwen", "mistral", "gemma")
+# Never pick these: they cannot answer a chat completion request.
+_MODEL_EXCLUDE = ("whisper", "tts", "embed", "guard", "vision", "moderation", "rerank", "transcribe")
+
+
+def active_model() -> str:
+    """The model id currently in use (the configured one until it is replaced)."""
+    return _resolved_model or LLM_MODEL
+
+
+async def _discover_model(client: httpx.AsyncClient, headers: Dict) -> str:
+    """Ask the provider which models exist and choose one we can chat with."""
+    res = await client.get(f"{LLM_BASE_URL}/models", headers=headers)
+    res.raise_for_status()
+    ids = [m.get("id", "") for m in res.json().get("data", [])]
+    usable = [i for i in ids if i and not any(bad in i.lower() for bad in _MODEL_EXCLUDE)]
+    if not usable:
+        raise RuntimeError(f"no usable chat model offered by {LLM_BASE_URL} (saw: {', '.join(ids[:8]) or 'none'})")
+    for want in _MODEL_PREFERENCE:
+        for model_id in usable:
+            if want in model_id.lower():
+                return model_id
+    return usable[0]
+
+
 async def _stream_hosted(question: str, results: List[SearchResult]) -> AsyncIterator[Dict]:
-    payload = {
-        "model": LLM_MODEL,
+    global _resolved_model
+
+    headers = {"Authorization": f"Bearer {LLM_API_KEY}"}
+    timeout = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=5.0)
+    body = {
         "stream": True,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": build_user_message(question, results)},
         ],
     }
-    headers = {"Authorization": f"Bearer {LLM_API_KEY}"}
-    timeout = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=5.0)
+
     async with httpx.AsyncClient(timeout=timeout) as client:
-        async with client.stream("POST", f"{LLM_BASE_URL}/chat/completions",
-                                 json=payload, headers=headers) as res:
-            if res.status_code != 200:
-                body = (await res.aread()).decode(errors="replace")
-                raise RuntimeError(f"{res.status_code}: {body[:300]}")
-            async for line in res.aiter_lines():
-                if not line.startswith("data: "):
+        for attempt in (1, 2):
+            model = active_model()
+            async with client.stream("POST", f"{LLM_BASE_URL}/chat/completions",
+                                     json={"model": model, **body}, headers=headers) as res:
+                if res.status_code == 404 and attempt == 1:
+                    # The configured model is gone; find a current one and retry once.
+                    await res.aread()
+                    _resolved_model = await _discover_model(client, headers)
                     continue
-                data = line[6:].strip()
-                if data == "[DONE]":
-                    break
-                chunk = json.loads(data)
-                delta = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content")
-                if delta:
-                    yield {"type": "delta", "text": delta}
-    yield {"type": "done", "model": LLM_MODEL}
+                if res.status_code != 200:
+                    detail = (await res.aread()).decode(errors="replace")
+                    raise RuntimeError(f"{res.status_code}: {detail[:300]}")
+
+                async for line in res.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        break
+                    chunk = json.loads(data)
+                    delta = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content")
+                    if delta:
+                        yield {"type": "delta", "text": delta}
+            yield {"type": "done", "model": model}
+            return
 
 
 # --------------------------------------------------------------------------- #
@@ -252,7 +295,7 @@ async def stream_answer(question: str, results: List[SearchResult], embedder) ->
     if (await run_in_threadpool(ollama_status))["model_ready"]:
         generators.append(("Ollama", _stream_ollama(question, results)))
     if LLM_API_KEY:
-        generators.append((LLM_MODEL, _stream_hosted(question, results)))
+        generators.append((active_model(), _stream_hosted(question, results)))
 
     for name, generator in generators:
         sent_any = False
